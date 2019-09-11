@@ -80,6 +80,10 @@ int main(void)
 	config_canonical_mode(false);
 
 	// Keep checking for cancellation request until bus manager thread has been joined.
+	int speed = 0;
+	int servo = 155;
+	bool reverse = false;
+
 	while (busMgr.IsRunning())
 	{
 		if (kbhit())
@@ -106,6 +110,40 @@ int main(void)
 				busMgr.UpdateParam(2, false);
 			else if (c == '}')
 				busMgr.UpdateParam(2, true);
+			else if (c == '0')
+				busMgr.SetSpeed(0);
+			else if (c == '+')
+			{
+				speed += 50;
+				if (speed >= 1000) speed = 1000;
+				busMgr.SetSpeed(speed);
+			}
+			else if (c == '-')
+			{
+				speed -= 50;
+				if (speed < 0) speed = 0;
+				busMgr.SetSpeed(speed);
+			}
+			else if (c == '1')
+			{
+				servo -= 5;
+				if (servo <= 100) servo = 100;
+				busMgr.SetServo(servo);
+			}
+			else if (c == '2')
+			{
+				servo += 5;
+				if (servo >= 200) servo = 200;
+				busMgr.SetServo(servo);
+			}
+			else if (c == 'r')
+			{
+				busMgr.SetReverse(true);
+			}
+			else if (c == 'f')
+			{
+				busMgr.SetReverse(false);
+			}
 		}
 
 		boost::this_thread::sleep(boost::posix_time::milliseconds(5));

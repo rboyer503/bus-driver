@@ -12,6 +12,7 @@
 #include <boost/thread.hpp>
 #include <boost/thread/mutex.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
+#include "ControlMgr.h"
 
 #define MAX_BUFFER_SIZE (320 * 240 + 100)
 #define NUM_LANES 6
@@ -151,6 +152,7 @@ struct LaneCandidate
 
 
 class SocketMgr;
+//class ControlMgr;
 
 class BusMgr
 {
@@ -168,6 +170,8 @@ class BusMgr
 	bool m_interrupted;
 	boost::posix_time::ptime m_startTime;
 	boost::posix_time::time_duration m_diff;
+	ControlMgr * m_pCtrlMgr;
+
 
 public:
 	BusMgr();
@@ -187,6 +191,12 @@ public:
 	void UpdatePage();
 	void UpdateParam(int param, bool up);
 	void DebugCommand();
+
+	void SetSpeed(int speed) { m_pCtrlMgr->SetSpeed(speed); }
+	void SetReverse(bool reverse) { m_pCtrlMgr->SetReverse(reverse); }
+	void SetServo(int servo) { m_pCtrlMgr->SetServo(servo); }
+	void SetLaneAssist(bool enable) { m_pCtrlMgr->SetLaneAssist(enable); }
+	bool GetLaneAssist() const { return m_pCtrlMgr->GetLaneAssist(); }
 
 private:
 	void WorkerFunc();

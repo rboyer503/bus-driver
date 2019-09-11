@@ -10,6 +10,7 @@
 #include "BusMgr.h"
 #include "SocketMgr.h"
 #include "VideoCaptureMgr.h"
+#include "ControlMgr.h"
 
 #define ENABLE_SOCKET_MGR 1
 
@@ -44,11 +45,13 @@ BusMgr::BusMgr() :
 	m_errorCode(EC_NONE), m_ipm(IPM_HOUGH), m_paramPage(PP_BLUR), m_running(false), m_interrupted(false)
 {
 	m_pSocketMgr = new SocketMgr(this);
+	m_pCtrlMgr = new ControlMgr();
 }
 
 BusMgr::~BusMgr()
 {
 	delete m_pSocketMgr;
+	delete m_pCtrlMgr;
 
 	if (m_thread.joinable())
 		m_thread.join();
@@ -73,6 +76,7 @@ bool BusMgr::Initialize()
 void BusMgr::Terminate()
 {
 	m_thread.interrupt();
+	m_pCtrlMgr->Terminate();
 }
 
 void BusMgr::UpdateIPM()
@@ -353,6 +357,8 @@ bool BusMgr::ProcessFrame(Mat & frame)
 {
 	PROFILE_START;
 
+	const int cRoadEdgeBuffer = 5;
+
 	Mat * pFrameDisplay = NULL;
 	Mat frameROI;
 	Mat frameGray;
@@ -363,6 +369,7 @@ bool BusMgr::ProcessFrame(Mat & frame)
 	eBDImageProcMode ipm = m_ipm;
 	int processUs[IPS_MAX];
 	memset(processUs, 0, sizeof(processUs));
+	int servo = 160;
 
 	if (ipm == IPM_NONE)
 	{
@@ -377,7 +384,8 @@ bool BusMgr::ProcessFrame(Mat & frame)
 		processUs[IPS_GRAY] = PROFILE_DIFF;
 		PROFILE_START;
 
-		frameROI = frameGray(Rect(0, 144, 320, 96));
+		//frameROI = frameGray(Rect(0, 144, 320, 96));
+		frameROI = frameGray(Rect(0, 96, 320, 120));
 
 		if (ipm == IPM_GRAY)
 		{
@@ -426,14 +434,15 @@ bool BusMgr::ProcessFrame(Mat & frame)
 							--x2;
 
 						if ( (x1 - x2) < 10)
-							break;
+							continue;
 
-						if (x1 < (frameCanny.cols - 1))
+						// Note: Ignore edges detected near edge of image
+						if (x1 < (frameCanny.cols - 1 - cRoadEdgeBuffer))
 						{
 							pOutRow[x1] = 255;
 						}
 
-						if (x2 > 0)
+						if (x2 > cRoadEdgeBuffer)
 						{
 							pOutRow[x2] = 255;
 						}
@@ -626,6 +635,11 @@ bool BusMgr::ProcessFrame(Mat & frame)
 							}
 						}
 
+						float leftOffset = 0.0f;
+						int leftTarget = 0;
+						float rightOffset = 0.0f;
+						int rightTarget = 0;
+
 						// Display best lanes.
 						for (int bestIndex = 0; bestIndex < 2; ++bestIndex)
 						{
@@ -635,8 +649,36 @@ bool BusMgr::ProcessFrame(Mat & frame)
 								if (lane.weight)
 								{
 									line(frameHough, Point(lane.line[0], lane.line[1] + offset), Point(lane.line[2], lane.line[3] + offset), Scalar(200, 200, 200), 3);
+
+									if (lane.line[2] < 160)
+									{
+										// Left lane.
+										leftOffset = (lane.line[0] - 135) / 3.0f;
+										leftTarget = 160 + static_cast<int>(leftOffset);
+									}
+									else
+									{
+										// Right lane.
+										rightOffset = (lane.line[0] - 226) / 3.0f;
+										rightTarget = 160 + static_cast<int>(rightOffset);
+									}
 								}
 							}
+						}
+
+						if (leftTarget || rightTarget)
+						{
+							if (leftTarget && rightTarget)
+								servo = (leftTarget + rightTarget) / 2;
+							else if (leftTarget)
+								servo = leftTarget;
+							else
+								servo = rightTarget;
+
+							if (servo < 130)
+								servo = 130;
+							else if (servo > 190)
+								servo = 190;
 						}
 
 						//PROFILE_LOG(post);
@@ -646,6 +688,11 @@ bool BusMgr::ProcessFrame(Mat & frame)
 				}
 			}
 		}
+	}
+
+	if (m_pCtrlMgr->GetLaneAssist())
+	{
+		m_pCtrlMgr->SetServo(servo);
 	}
 
 	// Encode for wifi transmission.
@@ -719,6 +766,11 @@ void BusMgr::BuildLaneCandidates(std::vector<cv::Vec4i> & lines, int yBase, std:
 		// x = (y - b) / m
 		// where m = (y2 - y1) / (x2 - x1) and b = y1 - m * x1.
 		float m = ((float)(l[3] - l[1])) / (l[2] - l[0]);
+
+		// Skip lines that are too horizontal.
+		if ( (m >= -0.25f) && (m <= 0.25f) )
+			continue;
+
 		float b = l[1] - (m * l[0]);
 
 		// Check whether this is an extension of an existing lane candidate.

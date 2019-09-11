@@ -9,6 +9,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <cstdlib>
 #include "SocketMgr.h"
 
 #include "BusMgr.h"
@@ -176,6 +177,37 @@ void SocketMgr::ReadCommandsWorker()
 			m_owner->UpdateParam(2, false);
 		else if (strcmp(recvBuffer, "debug") == 0)
 			m_owner->DebugCommand();
+		else if (strncmp(recvBuffer, "servo ", 6) == 0)
+		{
+			if (!m_owner->GetLaneAssist())
+			{
+				int value = atoi(&recvBuffer[6]);
+
+				// Joystick sends value from -32768 to 32767 - scale to 115 to 195
+				value = (value / 819) + 155;
+
+				m_owner->SetServo(value);
+			}
+		}
+		else if (strncmp(recvBuffer, "motor ", 6) == 0)
+		{
+			int value = atoi(&recvBuffer[6]);
+
+			// Joystick sends negative values when pushing forward, so reverse when positive.
+			m_owner->SetReverse(value > 0);
+
+			// Joystick sends value from -32768 to 32767 - scale to 0 to 1000
+			value = abs(value) / 33;
+			m_owner->SetSpeed(value);
+		}
+		else if (strcmp(recvBuffer, "laneassist on") == 0)
+		{
+			m_owner->SetLaneAssist(true);
+		}
+		else if (strcmp(recvBuffer, "laneassist off") == 0)
+		{
+			m_owner->SetLaneAssist(false);
+		}
 	}
 
 	cout << "Socket manager command reader thread exited." << endl;
