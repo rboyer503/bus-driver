@@ -126,13 +126,13 @@ int main(void)
 			}
 			else if (c == '1')
 			{
-				servo -= 5;
+				servo -= 1;
 				if (servo <= 100) servo = 100;
 				busMgr.SetServo(servo);
 			}
 			else if (c == '2')
 			{
-				servo += 5;
+				servo += 1;
 				if (servo >= 200) servo = 200;
 				busMgr.SetServo(servo);
 			}

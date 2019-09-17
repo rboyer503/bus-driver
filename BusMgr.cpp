@@ -386,6 +386,7 @@ bool BusMgr::ProcessFrame(Mat & frame)
 
 		//frameROI = frameGray(Rect(0, 144, 320, 96));
 		frameROI = frameGray(Rect(0, 96, 320, 120));
+		//frameROI = frameGray(Rect(0, 144, 320, 70));
 
 		if (ipm == IPM_GRAY)
 		{
@@ -402,6 +403,356 @@ bool BusMgr::ProcessFrame(Mat & frame)
 			if (ipm == IPM_BLUR)
 			{
 				pFrameDisplay = &frameFilter;
+
+				// Testing simplified, custom lane detection algorithm.
+				const int centerOffset = 0; // Lane search starts away from center by this # of pixels.
+				const int edgeBuffer = 3;
+				const int contThreshold = 10; // Continuation threshold: if x value diverges more than this in one scanline, treat as different line.
+				const int midServo = 158;
+				const int servoRange = 30;
+				//const float laneThresholdFactor = 1.5; // How much brighter than baseline road intensity to detect lane markings.
+
+				enum eLane { LEFT_LANE, RIGHT_LANE, MAX_LANES };
+
+				//int gradientThreshold = 20;
+				/*
+				if (!laneThreshold)
+				{
+					// Sum road intensity of small triangular area immediately in front of bus.
+					int xStart = (frameFilter.cols >> 1) - centerOffset;
+					int xWidth = centerOffset * 2;
+					int intensityTotal = 0;
+
+					for (int y = (frameFilter.rows - 1); y > (frameFilter.rows - 1 - centerOffset); --y)
+					{
+						uchar * pROIRow = frameFilter.ptr(y);
+
+						for (int x = xStart; x < (xStart + xWidth); ++x)
+							intensityTotal += pROIRow[x];
+
+						++xStart;
+						xWidth -= 2;
+
+					}
+
+					// Average pixel intensity.
+					laneThreshold = ( intensityTotal / (centerOffset * centerOffset) );
+
+					// Scale up to kernel size.
+					laneThreshold *= m_config.kernelSize;
+
+					// Apply factor to discriminate between baseline road and lane markings.
+					laneThreshold *= laneThresholdFactor;
+
+					cout << "laneThreshold=" << laneThreshold << endl;
+				}
+				*/
+
+				vector<Vec4i> lines[MAX_LANES];
+				Vec4i currLine[MAX_LANES];
+				currLine[LEFT_LANE][0] = currLine[RIGHT_LANE][0] = -1;
+				const int filter[] = {2, 1, 0, -1, -2};
+
+				for (int y = (frameFilter.rows - 1); y > 0; --y)
+				{
+					uchar * pROIRow = frameFilter.ptr(y);
+
+					int x;
+					int gradient;
+
+					// Search for left lane markings.
+					x = (frameFilter.cols >> 1) - m_config.kernelSize - centerOffset;
+					do
+					{
+						gradient = (pROIRow[x] * filter[0]) +
+								   (pROIRow[x + 1] * filter[1]) +
+								   (pROIRow[x + 3] * filter[3]) +
+								   (pROIRow[x + 4] * filter[4]);
+					}
+					while ( (gradient < m_config.laneSegregationThreshold) && (--x > edgeBuffer) );
+
+					// -- Found something exceeding threshold on this scanline?
+					if (gradient >= m_config.laneSegregationThreshold)
+					{
+						// Extension of current line?
+						if (currLine[LEFT_LANE][0] >= 0)
+						{
+							if ( abs(currLine[LEFT_LANE][2] - x) < contThreshold )
+							{
+								currLine[LEFT_LANE][2] = x;
+								currLine[LEFT_LANE][3] = y;
+							}
+							else
+							{
+								// Record current line.
+								if (abs(currLine[LEFT_LANE][3] - currLine[LEFT_LANE][1]) >= m_config.houghMinLineLength)
+									lines[LEFT_LANE].push_back(currLine[LEFT_LANE]);
+								currLine[LEFT_LANE][0] = -1;
+							}
+						}
+						else
+						{
+							// New line:
+							currLine[LEFT_LANE][0] = currLine[LEFT_LANE][2] = x;
+							currLine[LEFT_LANE][1] = currLine[LEFT_LANE][3] = y;
+						}
+					}
+					else if (currLine[LEFT_LANE][0] >= 0)
+					{
+						// Record current line.
+						if (abs(currLine[LEFT_LANE][3] - currLine[LEFT_LANE][1]) >= m_config.houghMinLineLength)
+							lines[LEFT_LANE].push_back(currLine[LEFT_LANE]);
+						currLine[LEFT_LANE][0] = -1;
+					}
+
+					// Search for right lane markings.
+					x = (frameFilter.cols >> 1) + centerOffset;
+					do
+					{
+						gradient = (pROIRow[x] * filter[4]) +
+								   (pROIRow[x + 1] * filter[3]) +
+								   (pROIRow[x + 3] * filter[1]) +
+								   (pROIRow[x + 4] * filter[0]);
+					}
+					while ( (gradient < m_config.laneSegregationThreshold) && (++x <= (320 - m_config.kernelSize - edgeBuffer)) );
+
+					// -- Found something exceeding threshold on this scanline?
+					if (gradient >= m_config.laneSegregationThreshold)
+					{
+						// Extension of current line?
+						if (currLine[RIGHT_LANE][0] >= 0)
+						{
+							if ( abs(currLine[RIGHT_LANE][2] - x) < contThreshold )
+							{
+								currLine[RIGHT_LANE][2] = x;
+								currLine[RIGHT_LANE][3] = y;
+							}
+							else
+							{
+								// Record current line.
+								if (abs(currLine[RIGHT_LANE][3] - currLine[RIGHT_LANE][1]) >= m_config.houghMinLineLength)
+									lines[RIGHT_LANE].push_back(currLine[RIGHT_LANE]);
+								currLine[RIGHT_LANE][0] = -1;
+							}
+						}
+						else
+						{
+							// New line:
+							currLine[RIGHT_LANE][0] = currLine[RIGHT_LANE][2] = x;
+							currLine[RIGHT_LANE][1] = currLine[RIGHT_LANE][3] = y;
+						}
+					}
+					else if (currLine[RIGHT_LANE][0] >= 0)
+					{
+						// Record current line.
+						if (abs(currLine[RIGHT_LANE][3] - currLine[RIGHT_LANE][1]) >= m_config.houghMinLineLength)
+							lines[RIGHT_LANE].push_back(currLine[RIGHT_LANE]);
+						currLine[RIGHT_LANE][0] = -1;
+					}
+				}
+
+				// Pick up last lines.
+				if (currLine[LEFT_LANE][0] >= 0)
+				{
+					// Record current line.
+					if (abs(currLine[LEFT_LANE][3] - currLine[LEFT_LANE][1]) >= m_config.houghMinLineLength)
+						lines[LEFT_LANE].push_back(currLine[LEFT_LANE]);
+				}
+				if (currLine[RIGHT_LANE][0] >= 0)
+				{
+					// Record current line.
+					if (abs(currLine[RIGHT_LANE][3] - currLine[RIGHT_LANE][1]) >= m_config.houghMinLineLength)
+						lines[RIGHT_LANE].push_back(currLine[RIGHT_LANE]);
+				}
+
+				// DEBUG CODE: Output raw line data after stats.
+				bool outputLines = false;
+				if (g_outputLines)
+				{
+					g_outputLines = false;
+					outputLines = true;
+					cout << endl;
+				}
+
+				static int intensity[3] = {150, 125, 100};
+				int colorIndex = 0;
+
+				int leftTarget = 0;
+				int rightTarget = 0;
+
+				bool tracking = false;
+				bool targetFound = false;
+				float m, b;
+				float mTarget, bTarget;
+				const int targetScanline = 60;
+
+				for (size_t i = 0; i < lines[LEFT_LANE].size(); ++i)
+				{
+					Vec4i l = lines[LEFT_LANE][i];
+
+					// Pre-process lines to avoid inf/-inf slope.
+					if (l[0] == l[2])
+						l[0]++;
+
+					// y = m * x + b
+					// x = (y - b) / m
+					// where m = (y2 - y1) / (x2 - x1) and b = y1 - m * x1.
+					if (!tracking)
+					{
+						tracking = true;
+						m = ((float)(l[3] - l[1])) / (l[2] - l[0]);
+						b = l[1] - (m * l[0]);
+						colorIndex = 0;
+
+						if ( !targetFound && (l[3] < targetScanline) )
+						{
+							mTarget = m;
+							bTarget = b;
+							targetFound = true;
+						}
+					}
+					else
+					{
+						if ( !targetFound && (l[1] < targetScanline) )
+						{
+							mTarget = m;
+							bTarget = b;
+							targetFound = true;
+						}
+
+						int xExpect = (int)( (l[1] - b) / m );
+						if ( (xExpect - l[0]) < (int)m_config.laneStitchThreshold )
+						{
+							// Line not unexpectedly too far left - treat as lane continuation.
+							m = ((float)(l[3] - l[1])) / (l[2] - l[0]);
+							b = l[1] - (m * l[0]);
+							colorIndex = 0;
+
+							if ( !targetFound && (l[3] < targetScanline) )
+							{
+								mTarget = m;
+								bTarget = b;
+								targetFound = true;
+							}
+						}
+						else
+							colorIndex = 2;
+					}
+
+					line(frameFilter, Point(l[0], l[1]), Point(l[2], l[3]), Scalar(intensity[colorIndex], intensity[colorIndex], intensity[colorIndex]), 2);
+					//colorIndex = (colorIndex + 1) % 3;
+
+					if (outputLines)
+					{
+						cout << "Line " << i << ": (" << l[0] << ", " << l[1] << ") (" <<
+								l[2] << ", " << l[3] << ")" << endl;
+					}
+				}
+
+				if (targetFound)
+				{
+					float offset = ( static_cast<int>( (targetScanline - bTarget) / mTarget ) - 70 ) / 3.0f;
+					leftTarget = midServo + static_cast<int>(offset);
+
+					if (outputLines)
+						cout << "Left lane target: " << static_cast<int>( (targetScanline - bTarget) / mTarget ) << endl;
+				}
+
+				tracking = targetFound = false;
+				for (size_t i = 0; i < lines[RIGHT_LANE].size(); ++i)
+				{
+					Vec4i l = lines[RIGHT_LANE][i];
+
+					// Pre-process lines to avoid inf/-inf slope.
+					if (l[0] == l[2])
+						l[0]++;
+
+					// y = m * x + b
+					// x = (y - b) / m
+					// where m = (y2 - y1) / (x2 - x1) and b = y1 - m * x1.
+					if (!tracking)
+					{
+						tracking = true;
+						m = ((float)(l[3] - l[1])) / (l[2] - l[0]);
+						b = l[1] - (m * l[0]);
+						colorIndex = 0;
+
+						if ( !targetFound && (l[3] < targetScanline) )
+						{
+							mTarget = m;
+							bTarget = b;
+							targetFound = true;
+						}
+					}
+					else
+					{
+						if ( !targetFound && (l[1] < targetScanline) )
+						{
+							mTarget = m;
+							bTarget = b;
+							targetFound = true;
+						}
+
+						int xExpect = (int)( (l[1] - b) / m );
+						if ( (l[0] - xExpect) < (int)m_config.laneStitchThreshold )
+						{
+							// Line not unexpectedly too far right - treat as lane continuation.
+							m = ((float)(l[3] - l[1])) / (l[2] - l[0]);
+							b = l[1] - (m * l[0]);
+							colorIndex = 0;
+
+							if ( !targetFound && (l[3] < targetScanline) )
+							{
+								mTarget = m;
+								bTarget = b;
+								targetFound = true;
+							}
+						}
+						else
+							colorIndex = 2;
+					}
+
+					line(frameFilter, Point(l[0], l[1]), Point(l[2], l[3]), Scalar(intensity[colorIndex], intensity[colorIndex], intensity[colorIndex]), 2);
+					//colorIndex = (colorIndex + 1) % 3;
+
+					if (outputLines)
+					{
+						cout << "Line " << i << ": (" << l[0] << ", " << l[1] << ") (" <<
+								l[2] << ", " << l[3] << ")" << endl;
+					}
+				}
+
+				if (targetFound)
+				{
+					float offset = ( static_cast<int>( (targetScanline - bTarget) / mTarget ) - 270 ) / 3.0f;
+					rightTarget = midServo + static_cast<int>(offset);
+
+					if (outputLines)
+						cout << "Right lane target: " << static_cast<int>( (targetScanline - bTarget) / mTarget ) << endl;
+				}
+
+				if (leftTarget || rightTarget)
+				{
+					if (leftTarget && rightTarget)
+						servo = (leftTarget + rightTarget) / 2;
+					else if (leftTarget)
+						servo = leftTarget;
+					else
+						servo = rightTarget;
+
+					if ( servo < (midServo - servoRange) )
+						servo = midServo - servoRange;
+					else if ( servo > (midServo + servoRange) )
+						servo = midServo + servoRange;
+				}
+
+				if (outputLines)
+				{
+					cout << "Target: " << leftTarget << ", " << rightTarget << "; Servo: " << servo << endl;
+				}
+
+				processUs[IPS_CANNY] = PROFILE_DIFF;
+				PROFILE_START;
 			}
 			else
 			{
