@@ -11,7 +11,7 @@ using namespace std;
 
 
 ControlMgr::ControlMgr() :
-	m_errorCode(CEC_NONE), m_speed(0), m_reverse(false), m_servo(155), m_laneAssist(false), m_update(true)
+	m_errorCode(CEC_NONE), m_speed(0), m_reverse(false), m_servo(cDefServo), m_laneAssist(false), m_update(true)
 {
 	m_thread = boost::thread(&ControlMgr::WorkerFunc, this);
 }

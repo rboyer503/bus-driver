@@ -81,7 +81,7 @@ int main(void)
 
 	// Keep checking for cancellation request until bus manager thread has been joined.
 	int speed = 0;
-	int servo = 155;
+	int servo = ControlMgr::cDefServo;
 	bool reverse = false;
 
 	while (busMgr.IsRunning())

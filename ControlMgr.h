@@ -38,6 +38,9 @@ class ControlMgr {
 	bool m_update;
 
 public:
+	static const int cDefServo = 158;
+	static const int cServoRange = 30;
+
 	ControlMgr();
 	virtual ~ControlMgr();
 

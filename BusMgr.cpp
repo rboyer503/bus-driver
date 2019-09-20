@@ -42,7 +42,7 @@ const char * const BusMgr::c_imageProcModeNames[] = {"None", "Gray", "Blur", "Ca
 const char * const BusMgr::c_imageProcStageNames[] = {"Gray", "Blur", "Canny", "Road", "Hough", "Post", "Send", "Total"};
 
 BusMgr::BusMgr() :
-	m_errorCode(EC_NONE), m_ipm(IPM_HOUGH), m_paramPage(PP_BLUR), m_running(false), m_interrupted(false)
+	m_errorCode(EC_NONE), m_ipm(IPM_BLUR), m_paramPage(PP_BLUR), m_running(false), m_interrupted(false)
 {
 	m_pSocketMgr = new SocketMgr(this);
 	m_pCtrlMgr = new ControlMgr();
@@ -405,48 +405,10 @@ bool BusMgr::ProcessFrame(Mat & frame)
 				pFrameDisplay = &frameFilter;
 
 				// Testing simplified, custom lane detection algorithm.
-				const int centerOffset = 0; // Lane search starts away from center by this # of pixels.
 				const int edgeBuffer = 3;
 				const int contThreshold = 10; // Continuation threshold: if x value diverges more than this in one scanline, treat as different line.
-				const int midServo = 158;
-				const int servoRange = 30;
-				//const float laneThresholdFactor = 1.5; // How much brighter than baseline road intensity to detect lane markings.
 
 				enum eLane { LEFT_LANE, RIGHT_LANE, MAX_LANES };
-
-				//int gradientThreshold = 20;
-				/*
-				if (!laneThreshold)
-				{
-					// Sum road intensity of small triangular area immediately in front of bus.
-					int xStart = (frameFilter.cols >> 1) - centerOffset;
-					int xWidth = centerOffset * 2;
-					int intensityTotal = 0;
-
-					for (int y = (frameFilter.rows - 1); y > (frameFilter.rows - 1 - centerOffset); --y)
-					{
-						uchar * pROIRow = frameFilter.ptr(y);
-
-						for (int x = xStart; x < (xStart + xWidth); ++x)
-							intensityTotal += pROIRow[x];
-
-						++xStart;
-						xWidth -= 2;
-
-					}
-
-					// Average pixel intensity.
-					laneThreshold = ( intensityTotal / (centerOffset * centerOffset) );
-
-					// Scale up to kernel size.
-					laneThreshold *= m_config.kernelSize;
-
-					// Apply factor to discriminate between baseline road and lane markings.
-					laneThreshold *= laneThresholdFactor;
-
-					cout << "laneThreshold=" << laneThreshold << endl;
-				}
-				*/
 
 				vector<Vec4i> lines[MAX_LANES];
 				Vec4i currLine[MAX_LANES];
@@ -461,7 +423,7 @@ bool BusMgr::ProcessFrame(Mat & frame)
 					int gradient;
 
 					// Search for left lane markings.
-					x = (frameFilter.cols >> 1) - m_config.kernelSize - centerOffset;
+					x = (frameFilter.cols >> 1) - m_config.kernelSize;
 					do
 					{
 						gradient = (pROIRow[x] * filter[0]) +
@@ -506,7 +468,7 @@ bool BusMgr::ProcessFrame(Mat & frame)
 					}
 
 					// Search for right lane markings.
-					x = (frameFilter.cols >> 1) + centerOffset;
+					x = (frameFilter.cols >> 1);
 					do
 					{
 						gradient = (pROIRow[x] * filter[4]) +
@@ -585,6 +547,9 @@ bool BusMgr::ProcessFrame(Mat & frame)
 				float m, b;
 				float mTarget, bTarget;
 				const int targetScanline = 60;
+				const int leftLaneCenterX = 70;
+				const int rightLaneCenterX = 270;
+				const float offsetToServoFactor = 3.0f;
 
 				for (size_t i = 0; i < lines[LEFT_LANE].size(); ++i)
 				{
@@ -640,7 +605,6 @@ bool BusMgr::ProcessFrame(Mat & frame)
 					}
 
 					line(frameFilter, Point(l[0], l[1]), Point(l[2], l[3]), Scalar(intensity[colorIndex], intensity[colorIndex], intensity[colorIndex]), 2);
-					//colorIndex = (colorIndex + 1) % 3;
 
 					if (outputLines)
 					{
@@ -651,8 +615,8 @@ bool BusMgr::ProcessFrame(Mat & frame)
 
 				if (targetFound)
 				{
-					float offset = ( static_cast<int>( (targetScanline - bTarget) / mTarget ) - 70 ) / 3.0f;
-					leftTarget = midServo + static_cast<int>(offset);
+					float offset = ( static_cast<int>( (targetScanline - bTarget) / mTarget ) - leftLaneCenterX ) / offsetToServoFactor;
+					leftTarget = ControlMgr::cDefServo + static_cast<int>(offset);
 
 					if (outputLines)
 						cout << "Left lane target: " << static_cast<int>( (targetScanline - bTarget) / mTarget ) << endl;
@@ -713,7 +677,6 @@ bool BusMgr::ProcessFrame(Mat & frame)
 					}
 
 					line(frameFilter, Point(l[0], l[1]), Point(l[2], l[3]), Scalar(intensity[colorIndex], intensity[colorIndex], intensity[colorIndex]), 2);
-					//colorIndex = (colorIndex + 1) % 3;
 
 					if (outputLines)
 					{
@@ -724,8 +687,8 @@ bool BusMgr::ProcessFrame(Mat & frame)
 
 				if (targetFound)
 				{
-					float offset = ( static_cast<int>( (targetScanline - bTarget) / mTarget ) - 270 ) / 3.0f;
-					rightTarget = midServo + static_cast<int>(offset);
+					float offset = ( static_cast<int>( (targetScanline - bTarget) / mTarget ) - rightLaneCenterX ) / offsetToServoFactor;
+					rightTarget = ControlMgr::cDefServo + static_cast<int>(offset);
 
 					if (outputLines)
 						cout << "Right lane target: " << static_cast<int>( (targetScanline - bTarget) / mTarget ) << endl;
@@ -740,10 +703,10 @@ bool BusMgr::ProcessFrame(Mat & frame)
 					else
 						servo = rightTarget;
 
-					if ( servo < (midServo - servoRange) )
-						servo = midServo - servoRange;
-					else if ( servo > (midServo + servoRange) )
-						servo = midServo + servoRange;
+					if ( servo < (ControlMgr::cDefServo - ControlMgr::cServoRange) )
+						servo = ControlMgr::cDefServo - ControlMgr::cServoRange;
+					else if ( servo > (ControlMgr::cDefServo + ControlMgr::cServoRange) )
+						servo = ControlMgr::cDefServo + ControlMgr::cServoRange;
 				}
 
 				if (outputLines)
