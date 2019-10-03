@@ -8,20 +8,25 @@
 #ifndef BUSMGR_H_
 #define BUSMGR_H_
 
+#include <algorithm>
+#include <numeric>
 #include <opencv2/opencv.hpp>
 #include <boost/thread.hpp>
 #include <boost/thread/mutex.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include "ControlMgr.h"
 
-#define MAX_BUFFER_SIZE (320 * 240 + 100)
-#define NUM_LANES 6
-#define MAX_LINE_WEIGHT 50
+//#define MAX_BUFFER_SIZE (320 * 240 + 100)
+//#define NUM_LANES 6
+//#define MAX_LINE_WEIGHT 50
 #define FRAME_SKIP 2
 #define FRAME_BACKLOG_MIN -5
 
 #define STATUS_SUPPRESS_DELAY 10
 #define STATUS_HISTORY_BUCKETS 10
+
+#define ROI_WIDTH 320
+#define ROI_HEIGHT 120
 
 
 enum eBDErrorCode
@@ -43,9 +48,7 @@ enum eBDImageProcMode
 	IPM_NONE,
 	IPM_GRAY,
 	IPM_BLUR,
-	IPM_CANNY,
-	IPM_ROAD,
-	IPM_HOUGH,
+	IPM_LANEASSIST,
 	IPM_MAX
 };
 
@@ -53,10 +56,7 @@ enum eBDImageProcStage
 {
 	IPS_GRAY,
 	IPS_BLUR,
-	IPS_CANNY,
-	IPS_ROAD,
-	IPS_HOUGH,
-	IPS_POST,
+	IPS_LANEASSIST,
 	IPS_SENT,
 	IPS_TOTAL,
 	IPS_MAX
@@ -65,22 +65,15 @@ enum eBDImageProcStage
 enum eBDParamPage
 {
 	PP_BLUR,
-	PP_CANNYTHRESHOLD,
-	PP_HOUGHGRANULARITY,
-	PP_HOUGHTHRESHOLD,
-	PP_HOUGHLINEPARAMS,
-	PP_LANETHRESHOLD,
+	PP_GRADIENTTHRESHOLD,
 	PP_MAX
 };
 
-struct Lane
+enum eLane
 {
-	cv::Vec4i line;
-	float m; // Slope
-	unsigned char weight; // Importance
-
-	Lane() : m(0.0f), weight(0)
-	{}
+	LEFT_LANE,
+	RIGHT_LANE,
+	MAX_LANES
 };
 
 struct Status
@@ -119,49 +112,158 @@ public:
 struct Config
 {
 	unsigned char kernelSize;
-	unsigned char cannyThresholdLow;
-	float cannyThresholdFactor;
-	unsigned char houghRho;
-	unsigned char houghTheta; // In degrees
-	unsigned char houghThreshold;
-	unsigned char houghMinLineLength;
-	unsigned char houghMaxLineGap;
-	unsigned char laneStitchThreshold;
-	unsigned char laneSegregationThreshold;
+	unsigned char gradientThreshold;
 	Config() :
-		kernelSize(5), cannyThresholdLow(100), cannyThresholdFactor(2.0),
-		houghRho(2), houghTheta(2), houghThreshold(25),
-		houghMinLineLength(1), houghMaxLineGap(50),
-		laneStitchThreshold(20), laneSegregationThreshold(20)
+		kernelSize(5), gradientThreshold(20)
 	{}
 };
 
-struct LaneCandidate
+struct LaneState
 {
-	cv::Vec4i line;
-	float m, b;
-	float mStart, bStart;
-	float mEnd, bEnd;
+	static constexpr int cSlopeHistSize = 20;
+	static constexpr int cSlopeHistMin = 5;
 
-	LaneCandidate() :
-		m(0.0), b(0.0),
-		mStart(0.0), bStart(0.0),
-		mEnd(0.0), bEnd(0.0)
-	{}
+	int xVals[ROI_HEIGHT];
+	int slopeHist[cSlopeHistSize];
+	int slopeHistIndex;
+	bool slopeHistFull;
+	bool started, searching;
+	cv::Vec2i firstEdge, lastEdge;
+	float firstSlope, lastSlope;
+
+	LaneState() :
+		slopeHistIndex(0), slopeHistFull(false), started(false), searching(false), firstSlope(0.0f), lastSlope(0.0f)
+	{
+		std::fill_n(xVals, ROI_HEIGHT, 0);
+		lastEdge[0] = firstEdge[0] = -1;
+	}
+
+	int getSlopeHistCount() const { return (slopeHistFull ? cSlopeHistSize : slopeHistIndex); }
+	bool isValidFirstSlope() const { return (firstEdge[0] >= 0); }
+	bool isValidLastSlope() const { return (lastEdge[0] >= 0); }
+
+	bool addSlopeHistEntry(int slope)
+	{
+		slopeHist[slopeHistIndex++] = slope;
+		if (slopeHistIndex == cSlopeHistSize)
+		{
+			slopeHistIndex = 0;
+
+			if (!slopeHistFull)
+			{
+				slopeHistFull = true;
+				firstSlope = static_cast<float>(std::accumulate(slopeHist, slopeHist + cSlopeHistSize, 0)) / cSlopeHistSize;
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	void startSearch(int y)
+	{
+		searching = true;
+		lastEdge[0] = xVals[y + 1];
+		lastEdge[1] = y;
+
+		int slopeHistCount = getSlopeHistCount();
+		lastSlope = static_cast<float>(std::accumulate(slopeHist, slopeHist + slopeHistCount, 0)) / slopeHistCount;
+	}
+
+	void finalize()
+	{
+		if (!slopeHistFull)
+		{
+			// May need to set firstSlope.
+			// Check if any adequate slope measurement exists yet.
+			// If not, reset firstEdge since it's of no use without a viable slope.
+			if (lastEdge[0] >= 0)
+			{
+				firstSlope = lastSlope;
+			}
+			else
+			{
+				firstEdge[0] = -1;
+			}
+		}
+	}
+
+	void debugOutput() const
+	{
+		std::cout << "    firstEdge: " << firstEdge[0] << ", " << firstEdge[1] << "; slope: " << firstSlope << std::endl;
+		std::cout << "    lastEdge: " << lastEdge[0] << ", " << lastEdge[1] << "; slope: " << lastSlope << std::endl;
+	}
+
+	int calcXTarget(int targetY, bool debug = false) const
+	{
+		if (xVals[targetY])
+		{
+			// Simple case: edge was present at target scanline.
+			if (debug)
+				std::cout << "  Trivial case" << std::endl;
+
+			return xVals[targetY];
+		}
+		else
+		{
+			// Search for nearest edges above and below target scanline.
+			int yTop;
+			for (yTop = (targetY - 1); yTop >= 0; --yTop)
+				if (xVals[yTop])
+					break;
+
+			int yBottom;
+			for (yBottom = (targetY + 1); yBottom < ROI_HEIGHT; ++yBottom)
+				if (xVals[yBottom])
+					break;
+
+			if ( (yTop >= 0) && (yBottom < ROI_HEIGHT) )
+			{
+				if (debug)
+					std::cout << "  Interpolate case" << std::endl;
+
+				// Found edges - interpolate for target scanline.
+				float m = static_cast<float>(xVals[yBottom] - xVals[yTop]) / (yBottom - yTop);
+				return xVals[yTop] + static_cast<int>((targetY - yTop) * m);
+			}
+			else if (yBottom < ROI_HEIGHT)
+			{
+				if (debug)
+					std::cout << "  Slope up case" << std::endl;
+
+				// Cannot interpolate, resort to slope estimation from shift history.
+				// Follow slope up from last edge detected (assuming slope estimate was acquired).
+				if (lastEdge[0] >= 0)
+					return static_cast<int>( (lastEdge[1] - targetY) * lastSlope ) + lastEdge[0];
+			}
+			else if (yTop >= 0)
+			{
+				if (debug)
+					std::cout << "  Slope down case" << std::endl;
+
+				// Cannot interpolate, resort to slope estimation from shift history.
+				// Follow slope down from first edge detected (assuming slope estimate was acquired).
+				if (firstEdge[0] >= 0)
+					return static_cast<int>( (firstEdge[1] - targetY) * firstSlope ) + firstEdge[0];
+			}
+		}
+
+		return 0;
+	}
 };
 
 
 class SocketMgr;
-//class ControlMgr;
+
 
 class BusMgr
 {
 	static const char * const c_imageProcModeNames[];
 	static const char * const c_imageProcStageNames[];
+
 	eBDErrorCode m_errorCode;
 	eBDImageProcMode m_ipm;
 	SocketMgr * m_pSocketMgr;
-	Lane m_lanes[NUM_LANES];
 	Status m_status;
 	Config m_config;
 	eBDParamPage m_paramPage;
@@ -171,7 +273,7 @@ class BusMgr
 	boost::posix_time::ptime m_startTime;
 	boost::posix_time::time_duration m_diff;
 	ControlMgr * m_pCtrlMgr;
-
+	bool m_debugTrigger;
 
 public:
 	BusMgr();
@@ -201,7 +303,7 @@ public:
 private:
 	void WorkerFunc();
 	bool ProcessFrame(cv::Mat & frame);
-	void BuildLaneCandidates(std::vector<cv::Vec4i> & lines, int yBase, std::vector<LaneCandidate *> & laneCandidates);
+	int LaneAssistComputeServo(cv::Mat & frame);
 	void DisplayCurrentParamPage();
 
 };
