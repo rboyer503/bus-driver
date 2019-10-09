@@ -25,8 +25,8 @@
 #define STATUS_SUPPRESS_DELAY 10
 #define STATUS_HISTORY_BUCKETS 10
 
-#define ROI_WIDTH 320
-#define ROI_HEIGHT 120
+#define ROI_WIDTH 160
+#define ROI_HEIGHT 60
 
 
 enum eBDErrorCode
@@ -120,7 +120,7 @@ struct Config
 
 struct LaneState
 {
-	static constexpr int cSlopeHistSize = 20;
+	static constexpr int cSlopeHistSize = 10;
 	static constexpr int cSlopeHistMin = 5;
 
 	int xVals[ROI_HEIGHT];
@@ -163,8 +163,13 @@ struct LaneState
 	void startSearch(int y)
 	{
 		searching = true;
-		lastEdge[0] = xVals[y + 1];
-		lastEdge[1] = y;
+
+		int ySearch = y + 1;
+		while ( (ySearch < ROI_HEIGHT) && !xVals[ySearch] )
+			++ySearch;
+
+		lastEdge[0] = xVals[ySearch + 1];
+		lastEdge[1] = ySearch;
 
 		int slopeHistCount = getSlopeHistCount();
 		lastSlope = static_cast<float>(std::accumulate(slopeHist, slopeHist + slopeHistCount, 0)) / slopeHistCount;

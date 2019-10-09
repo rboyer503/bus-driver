@@ -37,7 +37,7 @@ const char * const BusMgr::c_imageProcStageNames[] = {"Gray", "Blur", "Lane Assi
 
 
 BusMgr::BusMgr() :
-	m_errorCode(EC_NONE), m_ipm(IPM_BLUR), m_paramPage(PP_BLUR), m_running(false), m_interrupted(false), m_debugTrigger(false)
+	m_errorCode(EC_NONE), m_ipm(IPM_LANEASSIST), m_paramPage(PP_BLUR), m_running(false), m_interrupted(false), m_debugTrigger(false)
 {
 	m_pSocketMgr = new SocketMgr(this);
 	m_pCtrlMgr = new ControlMgr();
@@ -271,6 +271,7 @@ bool BusMgr::ProcessFrame(Mat & frame)
 	PROFILE_START;
 
 	Mat * pFrameDisplay = NULL;
+	Mat frameResize;
 	Mat frameGray;
 	Mat frameROI;
 	Mat frameFilter;
@@ -286,9 +287,10 @@ bool BusMgr::ProcessFrame(Mat & frame)
 	else
 	{
 		// Convert to grayscale image, flip, and focus to ROI.
-		cvtColor(frame, frameGray, CV_BGR2GRAY);
+		resize(frame, frameResize, Size(), 0.5, 0.5, INTER_NEAREST);
+		cvtColor(frameResize, frameGray, CV_BGR2GRAY);
 		flip(frameGray, frameGray, -1);
-		frameROI = frameGray(Rect(0, 96, ROI_WIDTH, ROI_HEIGHT));
+		frameROI = frameGray(Rect(0, 48, ROI_WIDTH, ROI_HEIGHT));
 
 		processUs[IPS_GRAY] = PROFILE_DIFF;
 		PROFILE_START;
@@ -308,12 +310,16 @@ bool BusMgr::ProcessFrame(Mat & frame)
 			if (ipm == IPM_BLUR)
 			{
 				pFrameDisplay = &frameFilter;
-
+			}
+			else
+			{
 				// Run lane assist algorithm to calculate servo position.
 				servo = LaneAssistComputeServo(frameFilter);
 
 				processUs[IPS_LANEASSIST] = PROFILE_DIFF;
 				PROFILE_START;
+
+				pFrameDisplay = &frameFilter;
 			}
 		}
 	}
@@ -380,18 +386,20 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 
 	const int filter[] = {2, 1, 0, -1, -2};
 	const int edgeBuffer = 3;
-	const int contThreshold = 20; // Continuation threshold: if x value diverges more than this in one scanline, treat as different line.
+	const int contThreshold = 5; // Continuation threshold: if x value diverges more than this in one scanline, treat as different line.
+	const int expectThreshold = 10; // Continuation threshold when searching after losing lane.
 
 	if (debugOutput)
 		cout << "  Left lane processing" << endl;
 
+	int centerX = (frame.cols >> 1) - m_config.kernelSize + 10;
 	for (int y = (frame.rows - 1); y > 0; --y)
 	{
 		uchar * pROIRow = frame.ptr(y);
 
 		// Search for left lane markings.
+		int x = centerX;
 		int gradient;
-		int x = (frame.cols >> 1) - m_config.kernelSize;
 		do
 		{
 			gradient = (pROIRow[x] * filter[0]) +
@@ -410,6 +418,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 				// First edge.
 				currState->started = true;
 				currState->xVals[y] = x;
+				pROIRow[x] = 255;
 
 				if (currState->firstEdge[0] < 0)
 				{
@@ -427,6 +436,8 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 				{
 					// Not too far left.
 					currState->xVals[y] = x;
+					pROIRow[x] = 255;
+
 
 					if ( (x - currState->xVals[y + 1]) < contThreshold )
 					{
@@ -437,18 +448,25 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 								cout << "    firstSlope (full): " << currState->firstSlope << endl;
 						}
 					}
+
+					if ( (x + contThreshold) >= centerX)
+						centerX += 10;
 				}
 			}
 			else
 			{
 				// Searching for the start of a new edge.
 				int expectX = static_cast<int>( (currState->lastEdge[1] - y) * currState->lastSlope ) + currState->lastEdge[0];
-				if ( (expectX - x) < contThreshold )
+				if ( (expectX - x) < expectThreshold )
 				{
 					// Found it - not too far left, although might be jumping to right.
 					currState->xVals[y] = x;
+					pROIRow[x] = 255;
 					currState->searching = false;
 				}
+
+				if ( (expectX + expectThreshold) >= centerX)
+					centerX += 10;
 			}
 		}
 		else if (currState->started && !currState->searching)
@@ -471,15 +489,23 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	}
 
 	if (debugOutput)
+	{
+		cout << "    centerX: " << centerX << endl;
 		cout << "  Right lane processing" << endl;
+	}
 
+	centerX = (frame.cols >> 1) + 10;
+	// TODO: Intersect centerX line from left lane with the above.
+	// Idea being, we stop processing right lane after that point to avoid accidentally including some left lane in right lane.
+	// But that lacks symmetry...
+	// Maybe we just shouldn't trust lanes that only have a few points towards the top?
 	for (int y = (frame.rows - 1); y > 0; --y)
 	{
 		uchar * pROIRow = frame.ptr(y);
 
 		// Search for right lane markings.
 		int gradient;
-		int x = (frame.cols >> 1);
+		int x = centerX;
 		do
 		{
 			gradient = (pROIRow[x] * filter[4]) +
@@ -487,7 +513,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 					   (pROIRow[x + 3] * filter[1]) +
 					   (pROIRow[x + 4] * filter[0]);
 		}
-		while ( (gradient < m_config.gradientThreshold) && (++x <= (320 - m_config.kernelSize - edgeBuffer)) );
+		while ( (gradient < m_config.gradientThreshold) && (++x <= (ROI_WIDTH - m_config.kernelSize - edgeBuffer)) );
 
 		// Found something exceeding threshold on this scanline?
 		LaneState * currState = &laneState[RIGHT_LANE];
@@ -498,6 +524,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 				// First edge.
 				currState->started = true;
 				currState->xVals[y] = x;
+				pROIRow[x] = 255;
 
 				if (currState->firstEdge[0] < 0)
 				{
@@ -515,6 +542,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 				{
 					// Not too far right.
 					currState->xVals[y] = x;
+					pROIRow[x] = 255;
 
 					if ( (currState->xVals[y + 1] - x) < contThreshold )
 					{
@@ -525,18 +553,25 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 								cout << "    firstSlope (full): " << currState->firstSlope << endl;
 						}
 					}
+
+					if ( (x - contThreshold) <= centerX)
+						centerX -= 10;
 				}
 			}
 			else
 			{
 				// Searching for the start of a new edge.
 				int expectX = static_cast<int>( (currState->lastEdge[1] - y) * currState->lastSlope ) + currState->lastEdge[0];
-				if ( (x - expectX) < contThreshold )
+				if ( (x - expectX) < expectThreshold )
 				{
 					// Found it - not too far right, although might be jumping to left.
 					currState->xVals[y] = x;
+					pROIRow[x] = 255;
 					currState->searching = false;
 				}
+
+				if ( (expectX - expectThreshold) <= centerX)
+					centerX -= 10;
 			}
 		}
 		else if (currState->started && !currState->searching)
@@ -558,6 +593,11 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 		}
 	}
 
+	if (debugOutput)
+	{
+		cout << "    centerX: " << centerX << endl;
+	}
+
 	for (LaneState & state : laneState)
 		state.finalize();
 
@@ -569,10 +609,10 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 		laneState[RIGHT_LANE].debugOutput();
 	}
 
-	const int targetScanline = 90;
-	const int leftLaneCenterX = 52;
-	const int rightLaneCenterX = 298;
-	const float offsetToServoFactor = 6.0f;
+	const int targetScanline = 45;
+	const int leftLaneCenterX = 26;
+	const int rightLaneCenterX = 149;
+	const float offsetToServoFactor = 3.0f;
 
 	int leftTarget = laneState[LEFT_LANE].calcXTarget(targetScanline, debugOutput);
 	if (leftTarget)
@@ -601,11 +641,22 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	}
 
 	int servo = ControlMgr::cDefServo;
+	const int targetDiffThreshold = 15;
 
 	if (leftTarget || rightTarget)
 	{
 		if (leftTarget && rightTarget)
-			servo = (leftTarget + rightTarget) / 2;
+		{
+			if ( abs(leftTarget - rightTarget) > targetDiffThreshold )
+			{
+				if ( abs(leftTarget - ControlMgr::cDefServo) > abs(rightTarget - ControlMgr::cDefServo) )
+					servo = rightTarget;
+				else
+					servo = leftTarget;
+			}
+			else
+				servo = (leftTarget + rightTarget) / 2;
+		}
 		else if (leftTarget)
 			servo = leftTarget;
 		else
