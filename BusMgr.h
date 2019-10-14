@@ -28,6 +28,8 @@
 #define ROI_WIDTH 160
 #define ROI_HEIGHT 60
 
+#define VOTE_ARRAY_WIDTH 370
+#define PACKED_VOTE_BUFFER_SIZE 64000
 
 enum eBDErrorCode
 {
@@ -279,6 +281,8 @@ class BusMgr
 	boost::posix_time::time_duration m_diff;
 	ControlMgr * m_pCtrlMgr;
 	bool m_debugTrigger;
+	int m_voteIndex[ROI_HEIGHT][VOTE_ARRAY_WIDTH];
+	short m_packedVoteArray[PACKED_VOTE_BUFFER_SIZE];
 
 public:
 	BusMgr();
@@ -310,6 +314,7 @@ private:
 	bool ProcessFrame(cv::Mat & frame);
 	int LaneAssistComputeServo(cv::Mat & frame);
 	void DisplayCurrentParamPage();
+	bool LoadVoteArray();
 
 };
 

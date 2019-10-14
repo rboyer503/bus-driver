@@ -5,6 +5,8 @@
  *      Author: rboyer
  */
 #include <limits>
+#include <fstream>
+#include <vector>
 
 #include "BusMgr.h"
 #include "SocketMgr.h"
@@ -54,6 +56,11 @@ BusMgr::~BusMgr()
 
 bool BusMgr::Initialize()
 {
+	if (!LoadVoteArray())
+	{
+		return false;
+	}
+
 	// Initialize monitor and command sockets.
 #ifdef ENABLE_SOCKET_MGR
 	if (!m_pSocketMgr->Initialize())
@@ -381,241 +388,275 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 		cout << endl << "Debug output" << endl;
 	}
 
-	// Simplified lane detection algorithm.
-	LaneState laneState[MAX_LANES];
+	// Perform edge detection using simple linear filter.
+	// Left lane and right lane edges handled independently.
+	// Sweep right to left for left lane edges, and vice versa for right lane edges.
+	// Apply suppression after an edge is detected as a simplistic "edge thinning".
 
-	const int filter[] = {2, 1, 0, -1, -2};
-	const int edgeBuffer = 3;
-	const int contThreshold = 5; // Continuation threshold: if x value diverges more than this in one scanline, treat as different line.
-	const int expectThreshold = 10; // Continuation threshold when searching after losing lane.
+	const int filter[] = {2, 1, 0, -1, -2}; // Not directly used due to optimizations.
+	const int edgeBuffer = 3; // Ignore a few pixels on far left and far right edges of image.
+	const int conditionalEdgeBuffer = 10; // Ignore more pixels on far left for right lane and far right for left lane.
+	const int suppressCount = 10; // Skip several pixels after an edge is detected.
 
+	uchar * pRow;
+	int gradient;
+
+	// Negative and positive edge maps for left and right lanes respectively.
+	// Edge maps are built so that edges resulting from neg->pos gradients can be culled.
+	// (Neg->pos gradients can occur from shadows, etc., and should be ignored.  Actual lane markers should be brighter than road color, not darker.)
+	uchar edgeMapNeg[ROI_HEIGHT][ROI_WIDTH] = {};
+	uchar edgeMapPos[ROI_HEIGHT][ROI_WIDTH] = {};
+
+	// Actual edge coordinates after neg-->pos gradient culling - separate bins for left and right lanes.
+	// Reserve enough for room to avoid ever needing to resize.
+	vector<Vec2i> leftEdges;
+	vector<Vec2i> rightEdges;
+	leftEdges.reserve(900);
+	rightEdges.reserve(900);
+
+	// Mark left and right X position for sweeping kernel for linear filter.
+	int xLeft = edgeBuffer;
+	int xRight = frame.cols - edgeBuffer - (sizeof(filter) / sizeof(filter[0]));
 	if (debugOutput)
-		cout << "  Left lane processing" << endl;
+		cout << "  xLeft=" << xLeft << ", xRight=" << xRight << endl;
 
-	int centerX = (frame.cols >> 1) - m_config.kernelSize + 10;
-	for (int y = (frame.rows - 1); y > 0; --y)
+	// Build edge maps.
+	for (int y = 0; y < frame.rows - 1; ++y)
 	{
-		uchar * pROIRow = frame.ptr(y);
+		pRow = frame.ptr(y);
 
-		// Search for left lane markings.
-		int x = centerX;
-		int gradient;
-		do
+		for (int x = xRight - conditionalEdgeBuffer; x >= xLeft; --x)
 		{
-			gradient = (pROIRow[x] * filter[0]) +
-					   (pROIRow[x + 1] * filter[1]) +
-					   (pROIRow[x + 3] * filter[3]) +
-					   (pROIRow[x + 4] * filter[4]);
-		}
-		while ( (gradient < m_config.gradientThreshold) && (--x > edgeBuffer) );
+			gradient = (pRow[x] << 1) +
+					   (pRow[x + 1]) -
+					   (pRow[x + 3]) -
+					   (pRow[x + 4] << 1);
 
-		// Found something exceeding threshold on this scanline?
-		LaneState * currState = &laneState[LEFT_LANE];
-		if (gradient >= m_config.gradientThreshold)
-		{
-			if (!currState->started)
+			if (gradient >= m_config.gradientThreshold)
 			{
-				// First edge.
-				currState->started = true;
-				currState->xVals[y] = x;
-				pROIRow[x] = 255;
-
-				if (currState->firstEdge[0] < 0)
-				{
-					currState->firstEdge[0] = x;
-					currState->firstEdge[1] = y;
-
-					if (debugOutput)
-						cout << "    firstEdge: " << x << ", " << y << endl;
-				}
+				//leftEdges.push_back(Vec2i(x + 2, y));
+				edgeMapNeg[y][x + 2] = 255;
+				//pRow[x + 2] = 255;
+				x -= suppressCount;
 			}
-			else if (!currState->searching)
+		}
+
+		for (int x = xLeft + conditionalEdgeBuffer; x <= xRight; ++x)
+		{
+			gradient = -(pRow[x] << 1) -
+					   (pRow[x + 1]) +
+					   (pRow[x + 3]) +
+					   (pRow[x + 4] << 1);
+
+			if (gradient >= m_config.gradientThreshold)
 			{
-				// Edge potentially connected to previous edge.
-				if ( (currState->xVals[y + 1] - x) < contThreshold )
+				//rightEdges.push_back(Vec2i(x + 2, y));
+				edgeMapPos[y][x + 2] = 255;
+				//pRow[x + 2] = 192;
+				x += suppressCount;
+			}
+		}
+	}
+
+	// Left lane edge detection with culling of neg->pos gradients.
+	for (int y = 0; y < ROI_HEIGHT; ++y)
+	{
+		for (int x = (xLeft + 2); x <= (xRight + 2 - conditionalEdgeBuffer); ++x)
+		{
+			if (edgeMapNeg[y][x])
+			{
+				// Perform culling if necessary.
+				int i;
+				for (i = 1; i <= 10; ++i)
 				{
-					// Not too far left.
-					currState->xVals[y] = x;
-					pROIRow[x] = 255;
-
-
-					if ( (x - currState->xVals[y + 1]) < contThreshold )
+					if (edgeMapPos[y][x + i])
 					{
-						// Not jumping to the right either - OK to include in shift history.
-						if ( currState->addSlopeHistEntry(x - currState->xVals[y + 1]) )
-						{
-							if (debugOutput)
-								cout << "    firstSlope (full): " << currState->firstSlope << endl;
-						}
+						edgeMapPos[y][x + i] = 0;
+						break;
 					}
-
-					if ( (x + contThreshold) >= centerX)
-						centerX += 10;
 				}
-			}
-			else
-			{
-				// Searching for the start of a new edge.
-				int expectX = static_cast<int>( (currState->lastEdge[1] - y) * currState->lastSlope ) + currState->lastEdge[0];
-				if ( (expectX - x) < expectThreshold )
+
+				if (i > 10)
 				{
-					// Found it - not too far left, although might be jumping to right.
-					currState->xVals[y] = x;
-					pROIRow[x] = 255;
-					currState->searching = false;
+					leftEdges.push_back(Vec2i(x, y));
 				}
-
-				if ( (expectX + expectThreshold) >= centerX)
-					centerX += 10;
 			}
 		}
-		else if (currState->started && !currState->searching)
+	}
+
+	// Right lane edge detection - culling was already complete.
+	for (int y = 0; y < ROI_HEIGHT; ++y)
+	{
+		for (int x = (xLeft + 2 + conditionalEdgeBuffer); x <= (xRight + 2); ++x)
 		{
-			int slopeHistCount = currState->getSlopeHistCount();
-			if (slopeHistCount < LaneState::cSlopeHistMin)
+			if (edgeMapPos[y][x])
 			{
-				// Not enough shift history for reasonable estimate of slope - just accept next edge.
-				currState->started = false;
-			}
-			else
-			{
-				// Estimate slope to better know where to expect the next edge.
-				currState->startSearch(y);
-
-				if (debugOutput)
-					cout << "    lastEdge: " << currState->lastEdge[0] << ", " << currState->lastEdge[1] << "; slope: " << currState->lastSlope << endl;
+				rightEdges.push_back(Vec2i(x, y));
 			}
 		}
+	}
+
+	// Show detected edges on image for diagnostics purposes.
+	for (Vec2i & edge : leftEdges)
+	{
+		frame.at<uchar>(edge[1], edge[0], 0) = 255;
+	}
+
+	for (Vec2i & edge : rightEdges)
+	{
+		frame.at<uchar>(edge[1], edge[0], 0) = 192;
+	}
+
+	// Apply lane voting.
+	short * pVote;
+
+	// Offset range: left lane (100 -> -25) => (85 => 210)
+	//              right lane (60 -> 185) => (125 => 0)
+	int bestOffset = 0;
+	int bestLaneId = 0;
+	int maxVotes = 0;
+	int debugMaxVotes = 0;
+
+	// Lane voting to find best left lane.
+	for (int offset = 85; offset <= 210; ++offset)
+	{
+		short laneVoteTable[31 * 31] = {};
+		debugMaxVotes = 0;
+
+		for (Vec2i & edge : leftEdges)
+		{
+			int index = m_voteIndex[edge[1]][edge[0] + offset];
+			if (index)
+			{
+				pVote = m_packedVoteArray + index;
+				while (*pVote)
+					++laneVoteTable[*pVote++];
+			}
+
+			index = m_voteIndex[edge[1]][edge[0] + offset - 1];
+			if (index)
+			{
+				pVote = m_packedVoteArray + index;
+				while (*pVote)
+					++laneVoteTable[*pVote++];
+			}
+
+			index = m_voteIndex[edge[1]][edge[0] + offset + 1];
+			if (index)
+			{
+				pVote = m_packedVoteArray + index;
+				while (*pVote)
+					++laneVoteTable[*pVote++];
+			}
+		}
+
+		for (int i = 0; i < (31 * 31); ++i)
+		{
+			if (laneVoteTable[i] > maxVotes)
+			{
+				maxVotes = laneVoteTable[i];
+				bestOffset = offset;
+				bestLaneId = i;
+
+				//if (debugOutput)
+				//	cout << "    New maxVotes=" << maxVotes << ", bestOffset=" << bestOffset << ", bestLaneId=" << bestLaneId << endl;
+			}
+
+			if (debugOutput)
+			{
+				if (laneVoteTable[i] > debugMaxVotes)
+					debugMaxVotes = laneVoteTable[i];
+			}
+		}
+
+		if (debugOutput)
+			cout << "    Debug x=" << (185 - offset) << ", maxVotes=" << debugMaxVotes << endl;
 	}
 
 	if (debugOutput)
+		cout << "  bestOffset=" << bestOffset << ", bestLaneId=" << bestLaneId << ", maxVotes=" << maxVotes << endl;
+
+	int leftTarget = ROI_WIDTH;
+	if (bestOffset)
 	{
-		cout << "    centerX: " << centerX << endl;
-		cout << "  Right lane processing" << endl;
+		leftTarget = 185 - bestOffset;
 	}
 
-	centerX = (frame.cols >> 1) + 10;
-	// TODO: Intersect centerX line from left lane with the above.
-	// Idea being, we stop processing right lane after that point to avoid accidentally including some left lane in right lane.
-	// But that lacks symmetry...
-	// Maybe we just shouldn't trust lanes that only have a few points towards the top?
-	for (int y = (frame.rows - 1); y > 0; --y)
+	// Lane voting to find best right lane.
+	bestOffset = 0;
+	bestLaneId = 0;
+	maxVotes = 0;
+
+	for (int offset = 125; offset >= 0; --offset)
 	{
-		uchar * pROIRow = frame.ptr(y);
+		short laneVoteTable[31 * 31] = {};
+		debugMaxVotes = 0;
 
-		// Search for right lane markings.
-		int gradient;
-		int x = centerX;
-		do
+		for (Vec2i & edge : rightEdges)
 		{
-			gradient = (pROIRow[x] * filter[4]) +
-					   (pROIRow[x + 1] * filter[3]) +
-					   (pROIRow[x + 3] * filter[1]) +
-					   (pROIRow[x + 4] * filter[0]);
-		}
-		while ( (gradient < m_config.gradientThreshold) && (++x <= (ROI_WIDTH - m_config.kernelSize - edgeBuffer)) );
-
-		// Found something exceeding threshold on this scanline?
-		LaneState * currState = &laneState[RIGHT_LANE];
-		if (gradient >= m_config.gradientThreshold)
-		{
-			if (!currState->started)
+			int index = m_voteIndex[edge[1]][edge[0] + offset];
+			if (index)
 			{
-				// First edge.
-				currState->started = true;
-				currState->xVals[y] = x;
-				pROIRow[x] = 255;
-
-				if (currState->firstEdge[0] < 0)
-				{
-					currState->firstEdge[0] = x;
-					currState->firstEdge[1] = y;
-
-					if (debugOutput)
-						cout << "    firstEdge: " << x << ", " << y << endl;
-				}
+				pVote = m_packedVoteArray + index;
+				while (*pVote)
+					++laneVoteTable[*pVote++];
 			}
-			else if (!currState->searching)
+
+			index = m_voteIndex[edge[1]][edge[0] + offset - 1];
+			if (index)
 			{
-				// Edge potentially connected to previous edge.
-				if ( (x - currState->xVals[y + 1]) < contThreshold )
-				{
-					// Not too far right.
-					currState->xVals[y] = x;
-					pROIRow[x] = 255;
-
-					if ( (currState->xVals[y + 1] - x) < contThreshold )
-					{
-						// Not jumping to the left either - OK to include in shift history.
-						if ( currState->addSlopeHistEntry(x - currState->xVals[y + 1]) )
-						{
-							if (debugOutput)
-								cout << "    firstSlope (full): " << currState->firstSlope << endl;
-						}
-					}
-
-					if ( (x - contThreshold) <= centerX)
-						centerX -= 10;
-				}
+				pVote = m_packedVoteArray + index;
+				while (*pVote)
+					++laneVoteTable[*pVote++];
 			}
-			else
-			{
-				// Searching for the start of a new edge.
-				int expectX = static_cast<int>( (currState->lastEdge[1] - y) * currState->lastSlope ) + currState->lastEdge[0];
-				if ( (x - expectX) < expectThreshold )
-				{
-					// Found it - not too far right, although might be jumping to left.
-					currState->xVals[y] = x;
-					pROIRow[x] = 255;
-					currState->searching = false;
-				}
 
-				if ( (expectX - expectThreshold) <= centerX)
-					centerX -= 10;
+			index = m_voteIndex[edge[1]][edge[0] + offset + 1];
+			if (index)
+			{
+				pVote = m_packedVoteArray + index;
+				while (*pVote)
+					++laneVoteTable[*pVote++];
 			}
 		}
-		else if (currState->started && !currState->searching)
-		{
-			int slopeHistCount = currState->getSlopeHistCount();
-			if (slopeHistCount < LaneState::cSlopeHistMin)
-			{
-				// Not enough shift history for reasonable estimate of slope - just accept next edge.
-				currState->started = false;
-			}
-			else
-			{
-				// Estimate slope to better know where to expect the next edge.
-				currState->startSearch(y);
 
-				if (debugOutput)
-					cout << "    lastEdge: " << currState->lastEdge[0] << ", " << currState->lastEdge[1] << "; slope: " << currState->lastSlope << endl;
+		for (int i = 0; i < (31 * 31); ++i)
+		{
+			if (laneVoteTable[i] > maxVotes)
+			{
+				maxVotes = laneVoteTable[i];
+				bestOffset = offset;
+				bestLaneId = i;
+
+				//if (debugOutput)
+				//	cout << "    New maxVotes=" << maxVotes << ", bestOffset=" << bestOffset << ", bestLaneId=" << bestLaneId << endl;
+			}
+
+			if (debugOutput)
+			{
+				if (laneVoteTable[i] > debugMaxVotes)
+					debugMaxVotes = laneVoteTable[i];
 			}
 		}
+
+		if (debugOutput)
+			cout << "    Debug x=" << (185 - offset) << ", maxVotes=" << debugMaxVotes << endl;
 	}
 
 	if (debugOutput)
+		cout << "  bestOffset=" << bestOffset << ", bestLaneId=" << bestLaneId << ", maxVotes=" << maxVotes << endl;
+
+	int rightTarget = 0;
+	if (bestOffset)
 	{
-		cout << "    centerX: " << centerX << endl;
+		rightTarget = 185 - bestOffset;
 	}
 
-	for (LaneState & state : laneState)
-		state.finalize();
-
-	if (debugOutput)
-	{
-		cout << "  Left lane summary" << endl;
-		laneState[LEFT_LANE].debugOutput();
-		cout << "  Right lane summary" << endl;
-		laneState[RIGHT_LANE].debugOutput();
-	}
-
-	const int targetScanline = 45;
+	// Adapt target X values to servo position.
 	const int leftLaneCenterX = 26;
 	const int rightLaneCenterX = 149;
 	const float offsetToServoFactor = 3.0f;
 
-	int leftTarget = laneState[LEFT_LANE].calcXTarget(targetScanline, debugOutput);
-	if (leftTarget)
+	if (leftTarget < ROI_WIDTH)
 	{
 		if (debugOutput)
 			cout << "    leftX=" << leftTarget;
@@ -627,7 +668,6 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 			cout << ", leftServo=" << leftTarget << endl;
 	}
 
-	int rightTarget = laneState[RIGHT_LANE].calcXTarget(targetScanline, debugOutput);
 	if (rightTarget)
 	{
 		if (debugOutput)
@@ -641,7 +681,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	}
 
 	int servo = ControlMgr::cDefServo;
-	const int targetDiffThreshold = 15;
+	const int targetDiffThreshold = 15; // If left and right lanes disagree strongly, ignore the one furthest from default (straight) position.
 
 	if (leftTarget || rightTarget)
 	{
@@ -686,4 +726,36 @@ void BusMgr::DisplayCurrentParamPage()
 		cout << "  1) Gradient Threshold" << endl;
 		break;
 	}
+}
+
+bool BusMgr::LoadVoteArray()
+{
+	ifstream indexFile("index_file.txt");
+	if (indexFile.is_open())
+	{
+		for (int y = 0; y < ROI_HEIGHT; ++y)
+			for (int x = 0; x < VOTE_ARRAY_WIDTH; ++x)
+				indexFile >> m_voteIndex[y][x];
+		indexFile.close();
+	}
+	else
+	{
+		cerr << "ERROR: Cannot open index file." << endl;
+		return false;
+	}
+
+	ifstream voteArrayFile("vote_array_file.txt");
+	if (voteArrayFile.is_open())
+	{
+		for (int i = 0; i < PACKED_VOTE_BUFFER_SIZE; ++i)
+			voteArrayFile >> m_packedVoteArray[i];
+		voteArrayFile.close();
+	}
+	else
+	{
+		cerr << "ERROR: Cannot open vote array file." << endl;
+		return false;
+	}
+
+	return true;
 }
