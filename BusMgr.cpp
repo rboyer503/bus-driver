@@ -43,12 +43,14 @@ BusMgr::BusMgr() :
 {
 	m_pSocketMgr = new SocketMgr(this);
 	m_pCtrlMgr = new ControlMgr();
+	m_pLaneTransform = new LaneTransform();
 }
 
 BusMgr::~BusMgr()
 {
 	delete m_pSocketMgr;
 	delete m_pCtrlMgr;
+	delete m_pLaneTransform;
 
 	if (m_thread.joinable())
 		m_thread.join();
@@ -56,8 +58,9 @@ BusMgr::~BusMgr()
 
 bool BusMgr::Initialize()
 {
-	if (!LoadVoteArray())
+	if (!m_pLaneTransform->Load())
 	{
+		m_errorCode = EC_LANETRANSFAIL;
 		return false;
 	}
 
@@ -497,191 +500,64 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	}
 
 	// Show detected edges on image for diagnostics purposes.
-	for (Vec2i & edge : leftEdges)
+	// Bounce between left and right edges.
+	static int diagDisplayCount = 0;
+	if (++diagDisplayCount == 10)
+		diagDisplayCount = 0;
+
+	if (diagDisplayCount < 5)
 	{
-		frame.at<uchar>(edge[1], edge[0], 0) = 255;
-	}
-
-	for (Vec2i & edge : rightEdges)
-	{
-		frame.at<uchar>(edge[1], edge[0], 0) = 192;
-	}
-
-	// Apply lane voting.
-	short * pVote;
-
-	// Offset range: left lane (100 -> -25) => (85 => 210)
-	//              right lane (60 -> 185) => (125 => 0)
-	int bestOffset = 0;
-	int bestLaneId = 0;
-	int maxVotes = 0;
-	int debugMaxVotes = 0;
-
-	// Lane voting to find best left lane.
-	for (int offset = 85; offset <= 210; ++offset)
-	{
-		short laneVoteTable[31 * 31] = {};
-		debugMaxVotes = 0;
-
 		for (Vec2i & edge : leftEdges)
 		{
-			int index = m_voteIndex[edge[1]][edge[0] + offset];
-			if (index)
-			{
-				pVote = m_packedVoteArray + index;
-				while (*pVote)
-					++laneVoteTable[*pVote++];
-			}
-
-			index = m_voteIndex[edge[1]][edge[0] + offset - 1];
-			if (index)
-			{
-				pVote = m_packedVoteArray + index;
-				while (*pVote)
-					++laneVoteTable[*pVote++];
-			}
-
-			index = m_voteIndex[edge[1]][edge[0] + offset + 1];
-			if (index)
-			{
-				pVote = m_packedVoteArray + index;
-				while (*pVote)
-					++laneVoteTable[*pVote++];
-			}
+			frame.at<uchar>(edge[1], edge[0], 0) = 255;
 		}
-
-		for (int i = 0; i < (31 * 31); ++i)
-		{
-			if (laneVoteTable[i] > maxVotes)
-			{
-				maxVotes = laneVoteTable[i];
-				bestOffset = offset;
-				bestLaneId = i;
-
-				//if (debugOutput)
-				//	cout << "    New maxVotes=" << maxVotes << ", bestOffset=" << bestOffset << ", bestLaneId=" << bestLaneId << endl;
-			}
-
-			if (debugOutput)
-			{
-				if (laneVoteTable[i] > debugMaxVotes)
-					debugMaxVotes = laneVoteTable[i];
-			}
-		}
-
-		if (debugOutput)
-			cout << "    Debug x=" << (185 - offset) << ", maxVotes=" << debugMaxVotes << endl;
 	}
-
-	if (debugOutput)
-		cout << "  bestOffset=" << bestOffset << ", bestLaneId=" << bestLaneId << ", maxVotes=" << maxVotes << endl;
-
-	int leftTarget = ROI_WIDTH;
-	if (bestOffset)
+	else
 	{
-		leftTarget = 185 - bestOffset;
-	}
-
-	// Lane voting to find best right lane.
-	bestOffset = 0;
-	bestLaneId = 0;
-	maxVotes = 0;
-
-	for (int offset = 125; offset >= 0; --offset)
-	{
-		short laneVoteTable[31 * 31] = {};
-		debugMaxVotes = 0;
-
 		for (Vec2i & edge : rightEdges)
 		{
-			int index = m_voteIndex[edge[1]][edge[0] + offset];
-			if (index)
-			{
-				pVote = m_packedVoteArray + index;
-				while (*pVote)
-					++laneVoteTable[*pVote++];
-			}
-
-			index = m_voteIndex[edge[1]][edge[0] + offset - 1];
-			if (index)
-			{
-				pVote = m_packedVoteArray + index;
-				while (*pVote)
-					++laneVoteTable[*pVote++];
-			}
-
-			index = m_voteIndex[edge[1]][edge[0] + offset + 1];
-			if (index)
-			{
-				pVote = m_packedVoteArray + index;
-				while (*pVote)
-					++laneVoteTable[*pVote++];
-			}
+			frame.at<uchar>(edge[1], edge[0], 0) = 255;
 		}
-
-		for (int i = 0; i < (31 * 31); ++i)
-		{
-			if (laneVoteTable[i] > maxVotes)
-			{
-				maxVotes = laneVoteTable[i];
-				bestOffset = offset;
-				bestLaneId = i;
-
-				//if (debugOutput)
-				//	cout << "    New maxVotes=" << maxVotes << ", bestOffset=" << bestOffset << ", bestLaneId=" << bestLaneId << endl;
-			}
-
-			if (debugOutput)
-			{
-				if (laneVoteTable[i] > debugMaxVotes)
-					debugMaxVotes = laneVoteTable[i];
-			}
-		}
-
-		if (debugOutput)
-			cout << "    Debug x=" << (185 - offset) << ", maxVotes=" << debugMaxVotes << endl;
 	}
 
-	if (debugOutput)
-		cout << "  bestOffset=" << bestOffset << ", bestLaneId=" << bestLaneId << ", maxVotes=" << maxVotes << endl;
-
-	int rightTarget = 0;
-	if (bestOffset)
-	{
-		rightTarget = 185 - bestOffset;
-	}
-
-	// Adapt target X values to servo position.
+	// Perform lane transform and adapt target X values for each lane to target servo positions.
 	const int leftLaneCenterX = 26;
 	const int rightLaneCenterX = 149;
 	const float offsetToServoFactor = 3.0f;
 
-	if (leftTarget < ROI_WIDTH)
+	int leftTarget = 0;
+	LaneInfo leftLaneInfo;
+	int leftAngle = 0;
+	if (m_pLaneTransform->LaneSearch(leftEdges, LEFT_LANE, leftLaneInfo, debugOutput))
 	{
-		if (debugOutput)
-			cout << "    leftX=" << leftTarget;
+		leftTarget = ControlMgr::cDefServo + static_cast<int>( (leftLaneInfo.xTarget - leftLaneCenterX) / offsetToServoFactor );
+		m_pLaneTransform->RenderLane(frame, leftLaneInfo);
 
-		// Correlate to servo value.
-		leftTarget = ControlMgr::cDefServo + static_cast<int>( (leftTarget - leftLaneCenterX) / offsetToServoFactor );
-
-		if (debugOutput)
-			cout << ", leftServo=" << leftTarget << endl;
+		leftAngle = m_pLaneTransform->GetLaneAngle(leftLaneInfo.laneId);
 	}
 
-	if (rightTarget)
+	int rightTarget = 0;
+	LaneInfo rightLaneInfo;
+	int rightAngle = 0;
+	if (m_pLaneTransform->LaneSearch(rightEdges, RIGHT_LANE, rightLaneInfo, debugOutput))
 	{
-		if (debugOutput)
-			cout << "    rightX=" << rightTarget;
+		rightTarget = ControlMgr::cDefServo + static_cast<int>( (rightLaneInfo.xTarget - rightLaneCenterX) / offsetToServoFactor );
+		m_pLaneTransform->RenderLane(frame, rightLaneInfo);
 
-		// Correlate to servo value.
-		rightTarget = ControlMgr::cDefServo + static_cast<int>( (rightTarget - rightLaneCenterX) / offsetToServoFactor );
+		rightAngle = m_pLaneTransform->GetLaneAngle(rightLaneInfo.laneId);
+	}
 
-		if (debugOutput)
-			cout << ", rightServo=" << rightTarget << endl;
+	if ( abs(leftAngle - rightAngle) >= 96 )
+	{
+		if (leftLaneInfo.votes > rightLaneInfo.votes)
+			rightTarget = 0;
+		else
+			leftTarget = 0;
 	}
 
 	int servo = ControlMgr::cDefServo;
-	const int targetDiffThreshold = 15; // If left and right lanes disagree strongly, ignore the one furthest from default (straight) position.
+	const int targetDiffThreshold = 10; // If left and right lanes disagree strongly, ignore the one furthest from default (straight) position.
+	int expectTarget = ControlMgr::cDefServo + ( (leftAngle + rightAngle) / 4 );
 
 	if (leftTarget || rightTarget)
 	{
@@ -689,7 +565,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 		{
 			if ( abs(leftTarget - rightTarget) > targetDiffThreshold )
 			{
-				if ( abs(leftTarget - ControlMgr::cDefServo) > abs(rightTarget - ControlMgr::cDefServo) )
+				if ( abs(leftTarget - expectTarget) > abs(rightTarget - expectTarget) )
 					servo = rightTarget;
 				else
 					servo = leftTarget;
@@ -709,7 +585,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	}
 
 	if (debugOutput)
-		cout << "  Target: " << leftTarget << ", " << rightTarget << "; Servo: " << servo << endl;
+		cout << "  Target: " << leftTarget << ", " << rightTarget << " (expect " << expectTarget << "); Servo: " << servo << endl;
 
 	return servo;
 }
@@ -726,36 +602,4 @@ void BusMgr::DisplayCurrentParamPage()
 		cout << "  1) Gradient Threshold" << endl;
 		break;
 	}
-}
-
-bool BusMgr::LoadVoteArray()
-{
-	ifstream indexFile("index_file.txt");
-	if (indexFile.is_open())
-	{
-		for (int y = 0; y < ROI_HEIGHT; ++y)
-			for (int x = 0; x < VOTE_ARRAY_WIDTH; ++x)
-				indexFile >> m_voteIndex[y][x];
-		indexFile.close();
-	}
-	else
-	{
-		cerr << "ERROR: Cannot open index file." << endl;
-		return false;
-	}
-
-	ifstream voteArrayFile("vote_array_file.txt");
-	if (voteArrayFile.is_open())
-	{
-		for (int i = 0; i < PACKED_VOTE_BUFFER_SIZE; ++i)
-			voteArrayFile >> m_packedVoteArray[i];
-		voteArrayFile.close();
-	}
-	else
-	{
-		cerr << "ERROR: Cannot open vote array file." << endl;
-		return false;
-	}
-
-	return true;
 }

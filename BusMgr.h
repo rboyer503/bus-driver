@@ -15,25 +15,20 @@
 #include <boost/thread/mutex.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include "ControlMgr.h"
+#include "LaneTransform.h"
+#include "Constants.h"
 
-//#define MAX_BUFFER_SIZE (320 * 240 + 100)
-//#define NUM_LANES 6
-//#define MAX_LINE_WEIGHT 50
 #define FRAME_SKIP 2
 #define FRAME_BACKLOG_MIN -5
 
 #define STATUS_SUPPRESS_DELAY 10
 #define STATUS_HISTORY_BUCKETS 10
 
-#define ROI_WIDTH 160
-#define ROI_HEIGHT 60
-
-#define VOTE_ARRAY_WIDTH 370
-#define PACKED_VOTE_BUFFER_SIZE 64000
 
 enum eBDErrorCode
 {
 	EC_NONE,
+	EC_LANETRANSFAIL,
 	EC_LISTENFAIL,
 	EC_ACCEPTFAIL,
 	EC_READCMDFAIL,
@@ -69,13 +64,6 @@ enum eBDParamPage
 	PP_BLUR,
 	PP_GRADIENTTHRESHOLD,
 	PP_MAX
-};
-
-enum eLane
-{
-	LEFT_LANE,
-	RIGHT_LANE,
-	MAX_LANES
 };
 
 struct Status
@@ -120,145 +108,6 @@ struct Config
 	{}
 };
 
-struct LaneState
-{
-	static constexpr int cSlopeHistSize = 10;
-	static constexpr int cSlopeHistMin = 5;
-
-	int xVals[ROI_HEIGHT];
-	int slopeHist[cSlopeHistSize];
-	int slopeHistIndex;
-	bool slopeHistFull;
-	bool started, searching;
-	cv::Vec2i firstEdge, lastEdge;
-	float firstSlope, lastSlope;
-
-	LaneState() :
-		slopeHistIndex(0), slopeHistFull(false), started(false), searching(false), firstSlope(0.0f), lastSlope(0.0f)
-	{
-		std::fill_n(xVals, ROI_HEIGHT, 0);
-		lastEdge[0] = firstEdge[0] = -1;
-	}
-
-	int getSlopeHistCount() const { return (slopeHistFull ? cSlopeHistSize : slopeHistIndex); }
-	bool isValidFirstSlope() const { return (firstEdge[0] >= 0); }
-	bool isValidLastSlope() const { return (lastEdge[0] >= 0); }
-
-	bool addSlopeHistEntry(int slope)
-	{
-		slopeHist[slopeHistIndex++] = slope;
-		if (slopeHistIndex == cSlopeHistSize)
-		{
-			slopeHistIndex = 0;
-
-			if (!slopeHistFull)
-			{
-				slopeHistFull = true;
-				firstSlope = static_cast<float>(std::accumulate(slopeHist, slopeHist + cSlopeHistSize, 0)) / cSlopeHistSize;
-				return true;
-			}
-		}
-
-		return false;
-	}
-
-	void startSearch(int y)
-	{
-		searching = true;
-
-		int ySearch = y + 1;
-		while ( (ySearch < ROI_HEIGHT) && !xVals[ySearch] )
-			++ySearch;
-
-		lastEdge[0] = xVals[ySearch + 1];
-		lastEdge[1] = ySearch;
-
-		int slopeHistCount = getSlopeHistCount();
-		lastSlope = static_cast<float>(std::accumulate(slopeHist, slopeHist + slopeHistCount, 0)) / slopeHistCount;
-	}
-
-	void finalize()
-	{
-		if (!slopeHistFull)
-		{
-			// May need to set firstSlope.
-			// Check if any adequate slope measurement exists yet.
-			// If not, reset firstEdge since it's of no use without a viable slope.
-			if (lastEdge[0] >= 0)
-			{
-				firstSlope = lastSlope;
-			}
-			else
-			{
-				firstEdge[0] = -1;
-			}
-		}
-	}
-
-	void debugOutput() const
-	{
-		std::cout << "    firstEdge: " << firstEdge[0] << ", " << firstEdge[1] << "; slope: " << firstSlope << std::endl;
-		std::cout << "    lastEdge: " << lastEdge[0] << ", " << lastEdge[1] << "; slope: " << lastSlope << std::endl;
-	}
-
-	int calcXTarget(int targetY, bool debug = false) const
-	{
-		if (xVals[targetY])
-		{
-			// Simple case: edge was present at target scanline.
-			if (debug)
-				std::cout << "  Trivial case" << std::endl;
-
-			return xVals[targetY];
-		}
-		else
-		{
-			// Search for nearest edges above and below target scanline.
-			int yTop;
-			for (yTop = (targetY - 1); yTop >= 0; --yTop)
-				if (xVals[yTop])
-					break;
-
-			int yBottom;
-			for (yBottom = (targetY + 1); yBottom < ROI_HEIGHT; ++yBottom)
-				if (xVals[yBottom])
-					break;
-
-			if ( (yTop >= 0) && (yBottom < ROI_HEIGHT) )
-			{
-				if (debug)
-					std::cout << "  Interpolate case" << std::endl;
-
-				// Found edges - interpolate for target scanline.
-				float m = static_cast<float>(xVals[yBottom] - xVals[yTop]) / (yBottom - yTop);
-				return xVals[yTop] + static_cast<int>((targetY - yTop) * m);
-			}
-			else if (yBottom < ROI_HEIGHT)
-			{
-				if (debug)
-					std::cout << "  Slope up case" << std::endl;
-
-				// Cannot interpolate, resort to slope estimation from shift history.
-				// Follow slope up from last edge detected (assuming slope estimate was acquired).
-				if (lastEdge[0] >= 0)
-					return static_cast<int>( (lastEdge[1] - targetY) * lastSlope ) + lastEdge[0];
-			}
-			else if (yTop >= 0)
-			{
-				if (debug)
-					std::cout << "  Slope down case" << std::endl;
-
-				// Cannot interpolate, resort to slope estimation from shift history.
-				// Follow slope down from first edge detected (assuming slope estimate was acquired).
-				if (firstEdge[0] >= 0)
-					return static_cast<int>( (firstEdge[1] - targetY) * firstSlope ) + firstEdge[0];
-			}
-		}
-
-		return 0;
-	}
-};
-
 
 class SocketMgr;
 
@@ -280,9 +129,8 @@ class BusMgr
 	boost::posix_time::ptime m_startTime;
 	boost::posix_time::time_duration m_diff;
 	ControlMgr * m_pCtrlMgr;
+	LaneTransform * m_pLaneTransform;
 	bool m_debugTrigger;
-	int m_voteIndex[ROI_HEIGHT][VOTE_ARRAY_WIDTH];
-	short m_packedVoteArray[PACKED_VOTE_BUFFER_SIZE];
 
 public:
 	BusMgr();
@@ -314,7 +162,6 @@ private:
 	bool ProcessFrame(cv::Mat & frame);
 	int LaneAssistComputeServo(cv::Mat & frame);
 	void DisplayCurrentParamPage();
-	bool LoadVoteArray();
 
 };
 
