@@ -193,12 +193,15 @@ void SocketMgr::ReadCommandsWorker()
 		{
 			int value = atoi(&recvBuffer[6]);
 
+			/*
 			// Joystick sends negative values when pushing forward, so reverse when positive.
 			m_owner->SetReverse(value > 0);
 
 			// Joystick sends value from -32768 to 32767 - scale to 0 to 1000
 			value = abs(value) / 33;
 			m_owner->SetSpeed(value);
+			*/
+			m_owner->SetAcceleration(-value / 3276.8f);
 		}
 		else if (strcmp(recvBuffer, "laneassist on") == 0)
 		{

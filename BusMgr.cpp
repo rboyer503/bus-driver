@@ -39,7 +39,7 @@ const char * const BusMgr::c_imageProcStageNames[] = {"Gray", "Blur", "Lane Assi
 
 
 BusMgr::BusMgr() :
-	m_errorCode(EC_NONE), m_ipm(IPM_LANEASSIST), m_paramPage(PP_BLUR), m_running(false), m_interrupted(false), m_debugTrigger(false)
+	m_errorCode(EC_NONE), m_ipm(IPM_LANEASSIST), m_paramPage(PP_BLUR), m_running(false), m_interrupted(false), m_debugTrigger(false), m_acceleration(0.0f), m_speed(0.0f)
 {
 	m_pSocketMgr = new SocketMgr(this);
 	m_pCtrlMgr = new ControlMgr();
@@ -147,6 +147,28 @@ void BusMgr::UpdateParam(int param, bool up)
 void BusMgr::DebugCommand()
 {
 	m_debugTrigger = true;
+}
+
+void BusMgr::ApplyAcceleration()
+{
+	const float resistanceFactor = 0.01f;
+	float resistance = -m_speed * resistanceFactor;
+	float effectiveAccel;
+	{
+		boost::mutex::scoped_lock lock(m_accelMutex);
+		effectiveAccel = m_acceleration + resistance;
+	}
+
+	m_speed += effectiveAccel;
+
+	int speed = abs(static_cast<int>(m_speed));
+	if (speed > 1000)
+		speed = 1000;
+	else if (speed < 10)
+		speed = 0;
+
+	SetReverse(m_speed < 0.0f);
+	SetSpeed(speed);
 }
 
 void BusMgr::WorkerFunc()

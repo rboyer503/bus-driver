@@ -131,6 +131,9 @@ class BusMgr
 	ControlMgr * m_pCtrlMgr;
 	LaneTransform * m_pLaneTransform;
 	bool m_debugTrigger;
+	boost::mutex m_accelMutex;
+	float m_acceleration;
+	float m_speed;
 
 public:
 	BusMgr();
@@ -152,6 +155,12 @@ public:
 	void DebugCommand();
 
 	void SetSpeed(int speed) { m_pCtrlMgr->SetSpeed(speed); }
+	void SetAcceleration(float accel)
+	{
+		boost::mutex::scoped_lock lock(m_accelMutex);
+		m_acceleration = accel;
+	}
+	void ApplyAcceleration();
 	void SetReverse(bool reverse) { m_pCtrlMgr->SetReverse(reverse); }
 	void SetServo(int servo) { m_pCtrlMgr->SetServo(servo); }
 	void SetLaneAssist(bool enable) { m_pCtrlMgr->SetLaneAssist(enable); }
