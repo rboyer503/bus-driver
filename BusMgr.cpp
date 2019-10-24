@@ -322,7 +322,7 @@ bool BusMgr::ProcessFrame(Mat & frame)
 		resize(frame, frameResize, Size(), 0.5, 0.5, INTER_NEAREST);
 		cvtColor(frameResize, frameGray, CV_BGR2GRAY);
 		flip(frameGray, frameGray, -1);
-		frameROI = frameGray(Rect(0, 48, ROI_WIDTH, ROI_HEIGHT));
+		frameROI = frameGray(Rect(0, 78, ROI_WIDTH, ROI_HEIGHT));
 
 		processUs[IPS_GRAY] = PROFILE_DIFF;
 		PROFILE_START;
@@ -422,6 +422,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	const int edgeBuffer = 3; // Ignore a few pixels on far left and far right edges of image.
 	const int conditionalEdgeBuffer = 10; // Ignore more pixels on far left for right lane and far right for left lane.
 	const int suppressCount = 10; // Skip several pixels after an edge is detected.
+	const int startRow = 0;
 
 	uchar * pRow;
 	int gradient;
@@ -436,8 +437,8 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	// Reserve enough for room to avoid ever needing to resize.
 	vector<Vec2i> leftEdges;
 	vector<Vec2i> rightEdges;
-	leftEdges.reserve(900);
-	rightEdges.reserve(900);
+	leftEdges.reserve(450);
+	rightEdges.reserve(450);
 
 	// Mark left and right X position for sweeping kernel for linear filter.
 	int xLeft = edgeBuffer;
@@ -446,7 +447,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 		cout << "  xLeft=" << xLeft << ", xRight=" << xRight << endl;
 
 	// Build edge maps.
-	for (int y = 0; y < frame.rows - 1; ++y)
+	for (int y = startRow; y < frame.rows - 1; ++y)
 	{
 		pRow = frame.ptr(y);
 
@@ -484,7 +485,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	}
 
 	// Left lane edge detection with culling of neg->pos gradients.
-	for (int y = 0; y < ROI_HEIGHT; ++y)
+	for (int y = startRow; y < ROI_HEIGHT; ++y)
 	{
 		for (int x = (xLeft + 2); x <= (xRight + 2 - conditionalEdgeBuffer); ++x)
 		{
@@ -510,7 +511,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	}
 
 	// Right lane edge detection - culling was already complete.
-	for (int y = 0; y < ROI_HEIGHT; ++y)
+	for (int y = startRow; y < ROI_HEIGHT; ++y)
 	{
 		for (int x = (xLeft + 2 + conditionalEdgeBuffer); x <= (xRight + 2); ++x)
 		{
@@ -543,9 +544,9 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	}
 
 	// Perform lane transform and adapt target X values for each lane to target servo positions.
-	const int leftLaneCenterX = 26;
-	const int rightLaneCenterX = 149;
-	const float offsetToServoFactor = 3.0f;
+	const int leftLaneCenterX = 30;
+	const int rightLaneCenterX = 153;
+	const float offsetToServoFactor = 2.5f;
 
 	int leftTarget = 0;
 	LaneInfo leftLaneInfo;
@@ -577,6 +578,46 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 			leftTarget = 0;
 	}
 
+	static int lastServo = 0;
+	if (leftTarget && rightTarget)
+	{
+		//const int closeFactor = 20;
+		//const int closeCutoff = (ROI_WIDTH >> 1) + 10;
+		//int leftCloserX, rightCloserX;
+		if (leftLaneInfo.xTarget >= rightLaneInfo.xTarget)
+		{
+			if (lastServo)
+			{
+				if (debugOutput)
+					cout << "  Suppressed lane; lastServo=" << lastServo << ", leftTarget=" << leftTarget << ", rightTarget=" << rightTarget << endl;
+
+				if ( abs(leftTarget - lastServo) > abs(rightTarget - lastServo) )
+					leftTarget = 0;
+				else
+					rightTarget = 0;
+			}
+			/*
+			// Probably picking up two sides of one lane - decide whether we're to the right or left of it.
+			leftCloserX = leftLaneInfo.xTarget - (m_pLaneTransform->GetLaneSlope(leftLaneInfo.laneId) * closeFactor);
+			rightCloserX = rightLaneInfo.xTarget - (m_pLaneTransform->GetLaneSlope(rightLaneInfo.laneId) * closeFactor);
+
+			if ( ((leftCloserX + rightCloserX) / 2) < closeCutoff )
+			{
+				// Bus is to the right, so left lane is correct - get rid of right lane.
+				rightTarget = 0;
+			}
+			else
+			{
+				// Bus is to the left...
+				leftTarget = 0;
+			}
+
+			if (debugOutput)
+				cout << "  Suppressed lane; leftCloserX=" << leftCloserX << ", rightCloserX=" << rightCloserX << endl;
+			*/
+		}
+	}
+
 	int servo = ControlMgr::cDefServo;
 	const int targetDiffThreshold = 10; // If left and right lanes disagree strongly, ignore the one furthest from default (straight) position.
 	int expectTarget = ControlMgr::cDefServo + ( (leftAngle + rightAngle) / 4 );
@@ -599,6 +640,8 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 			servo = leftTarget;
 		else
 			servo = rightTarget;
+
+		lastServo = servo;
 
 		if ( servo < (ControlMgr::cDefServo - ControlMgr::cServoRange) )
 			servo = ControlMgr::cDefServo - ControlMgr::cServoRange;
