@@ -183,8 +183,8 @@ void SocketMgr::ReadCommandsWorker()
 			{
 				int value = atoi(&recvBuffer[6]);
 
-				// Joystick sends value from -32768 to 32767 - scale to 128 to 188
-				value = (value / 1092) + ControlMgr::cDefServo;
+				// Joystick sends value from -32768 to 32767 - scale to 126 to 190
+				value = (value / 1024) + ControlMgr::cDefServo;
 
 				m_owner->SetServo(value);
 			}

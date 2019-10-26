@@ -19,13 +19,18 @@ using namespace cv;
 const std::string LaneTransform::c_indexFileName("index_file.txt");
 const std::string LaneTransform::c_voteArrayFileName("vote_array_file.txt");
 const std::string LaneTransform::c_laneFileName("lane_file.txt");
-const cv::Vec2i LaneTransform::c_offsetRange[MAX_LANES] = { {-25, 141}, {95, -71} }; // { {65, 211}, {145, -1} }; // { {85, 211}, {125, -1} };
+const cv::Vec2i LaneTransform::c_offsetRange[MAX_LANES] = { {-35, 141}, {105, -71} }; // { {65, 211}, {145, -1} }; // { {85, 211}, {125, -1} };
 
 
 LaneTransform::LaneTransform()
 {
-	for (int y = 0; y < c_voteArrayHeight; ++y)
-		m_weightArray[y] = (y / 10) + 1;
+	const int divisionSize = c_voteArrayHeight / 3;
+	for (int y = 0; y < divisionSize; ++y)
+	{
+		m_weightArray[y] = 1;
+		m_weightArray[y + divisionSize] = 2;
+		m_weightArray[y + (divisionSize * 2)] = 4;
+	}
 
 	for (int laneId = 0; laneId < c_laneVariants; ++laneId)
 		m_slopeArray[laneId] = tan( GetLaneAngle(laneId) * PI / 180.0 );
@@ -77,17 +82,17 @@ bool LaneTransform::Load()
 	return true;
 }
 
-bool LaneTransform::LaneSearch(vector<Vec2i> & edges, eLane lane, LaneInfo & laneInfo, bool debug /* = false */) const
+bool LaneTransform::LaneSearch(const vector<Vec2i> & edges, const eLane lane, const cv::Vec2i searchRange, LaneInfo & laneInfo, const bool debug /* = false */) const
 {
 	const int cVoteArrayMedianX = c_voteArrayWidth / 2;
+	const int lsLowThreshold = 18;
 
 	LaneInfo tempLaneInfo;
 	int step = (lane == LEFT_LANE ? 1 : -1);
 	eLaneSearchState lss = LSS_WAIT_FOR_LOW_THRES;
-	const int lsLowThreshold = 15;
 	bool lsDone = false;
 
-	for (int offset = c_offsetRange[lane][0]; offset != c_offsetRange[lane][1]; offset += step)
+	for (int offset = (cVoteArrayMedianX - searchRange[0]); offset != (cVoteArrayMedianX - searchRange[1]); offset += step)
 	{
 		short laneVoteTable[c_laneVariants + 1] = {};
 		const short * pVote;
@@ -95,7 +100,7 @@ bool LaneTransform::LaneSearch(vector<Vec2i> & edges, eLane lane, LaneInfo & lan
 		int currBestLaneId = 0;
 		bool done = false;
 
-		for (Vec2i & edge : edges)
+		for (const Vec2i & edge : edges)
 		{
 			int index;
 			int x = edge[0] + offset - 1;
@@ -112,32 +117,6 @@ bool LaneTransform::LaneSearch(vector<Vec2i> & edges, eLane lane, LaneInfo & lan
 						laneVoteTable[*pVote++] += m_weightArray[edge[1]];
 				}
 			}
-
-			/*
-			int index = m_voteIndex[edge[1]][edge[0] + offset];
-			if (index)
-			{
-				pVote = m_packedVoteArray + index;
-				while (*pVote)
-					++laneVoteTable[*pVote++]; // += m_weightArray[edge[1]];
-			}
-
-			index = m_voteIndex[edge[1]][edge[0] + offset - 1];
-			if (index)
-			{
-				pVote = m_packedVoteArray + index;
-				while (*pVote)
-					++laneVoteTable[*pVote++]; // += m_weightArray[edge[1]];
-			}
-
-			index = m_voteIndex[edge[1]][edge[0] + offset + 1];
-			if (index)
-			{
-				pVote = m_packedVoteArray + index;
-				while (*pVote)
-					++laneVoteTable[*pVote++]; // += m_weightArray[edge[1]];
-			}
-			*/
 		}
 
 		for (int i = 1; i <= c_laneVariants; ++i)
@@ -148,8 +127,6 @@ bool LaneTransform::LaneSearch(vector<Vec2i> & edges, eLane lane, LaneInfo & lan
 				currBestLaneId = i - 1;
 			}
 		}
-
-		//currMaxVotes *= ( 1.0f - ( abs(GetSlopeAdjust(currBestLaneId)) / 30.0f ) );
 
 		if (debug)
 			cout << "    Debug xTarget=" << (cVoteArrayMedianX - offset) << ", maxVotes=" << currMaxVotes << ", bestLaneId=" << currBestLaneId << endl;
@@ -163,13 +140,6 @@ bool LaneTransform::LaneSearch(vector<Vec2i> & edges, eLane lane, LaneInfo & lan
 
 		switch (lss)
 		{
-		//case LSS_INIT:
-		//	lsLowThreshold = currMaxVotes * 4;
-		//	if (lsLowThreshold < 20)
-		//		lsLowThreshold = 20;
-		//	lss = LSS_WAIT_FOR_LOW_THRES;
-		//	break;
-
 		case LSS_WAIT_FOR_LOW_THRES:
 			if (currMaxVotes >= lsLowThreshold)
 				lss = LSS_WAIT_FOR_DECAY;
@@ -201,7 +171,7 @@ bool LaneTransform::LaneSearch(vector<Vec2i> & edges, eLane lane, LaneInfo & lan
 	return true;
 }
 
-void LaneTransform::RenderLane(Mat & frame, LaneInfo & laneInfo) const
+void LaneTransform::RenderLane(Mat & frame, const LaneInfo & laneInfo) const
 {
 	const short * pLane = m_lanes[laneInfo.laneId];
 	int offset = (c_voteArrayWidth / 2) - laneInfo.xTarget;
@@ -214,7 +184,7 @@ void LaneTransform::RenderLane(Mat & frame, LaneInfo & laneInfo) const
 	}
 }
 
-int LaneTransform::GetLaneAngle(int laneId) const
+int LaneTransform::GetLaneAngle(const int laneId) const
 {
 	return ( (laneId / c_numSlopeAdjust) - (c_numStartAngles >> 1) ) * 4;
 }

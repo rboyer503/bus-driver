@@ -39,7 +39,7 @@ class ControlMgr {
 
 public:
 	static const int cDefServo = 158;
-	static const int cServoRange = 30;
+	static const int cServoRange = 32;
 
 	ControlMgr();
 	virtual ~ControlMgr();

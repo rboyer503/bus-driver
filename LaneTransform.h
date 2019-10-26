@@ -30,6 +30,9 @@ struct LaneInfo
 
 	LaneInfo() : xTarget(0), laneId(0), votes(0)
 	{}
+
+	void deactivate() { votes = 0; }
+	bool isActive() const { return (votes > 0); }
 };
 
 
@@ -71,10 +74,10 @@ public:
 	LaneTransform();
 
 	bool Load();
-	bool LaneSearch(std::vector<cv::Vec2i> & edges, eLane lane, LaneInfo & laneInfo, bool debug = false) const;
-	void RenderLane(cv::Mat & frame, LaneInfo & laneInfo) const;
-	int GetLaneAngle(int laneId) const;
-	float GetLaneSlope(int laneId) const { return m_slopeArray[laneId]; }
+	bool LaneSearch(const std::vector<cv::Vec2i> & edges, const eLane lane, const cv::Vec2i searchRange, LaneInfo & laneInfo, const bool debug = false) const;
+	void RenderLane(cv::Mat & frame, const LaneInfo & laneInfo) const;
+	int GetLaneAngle(const int laneId) const;
+	float GetLaneSlope(const int laneId) const { return m_slopeArray[laneId]; }
 	// int GetSlopeAdjust(int laneId) const;
 };
 

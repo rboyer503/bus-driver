@@ -116,6 +116,7 @@ class BusMgr
 {
 	static const char * const c_imageProcModeNames[];
 	static const char * const c_imageProcStageNames[];
+	static const cv::Vec2i c_defaultRange[MAX_LANES];
 
 	eBDErrorCode m_errorCode;
 	eBDImageProcMode m_ipm;
@@ -130,6 +131,8 @@ class BusMgr
 	boost::posix_time::time_duration m_diff;
 	ControlMgr * m_pCtrlMgr;
 	LaneTransform * m_pLaneTransform;
+	LaneInfo m_lockedLanes[MAX_LANES];
+	cv::Vec2i m_searchRange[MAX_LANES];
 	bool m_debugTrigger;
 	boost::mutex m_accelMutex;
 	float m_acceleration;
