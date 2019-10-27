@@ -40,7 +40,8 @@ const cv::Vec2i BusMgr::c_defaultRange[MAX_LANES] = { {ROI_WIDTH / 2, -26}, {ROI
 
 
 BusMgr::BusMgr() :
-	m_errorCode(EC_NONE), m_ipm(IPM_LANEASSIST), m_paramPage(PP_BLUR), m_running(false), m_interrupted(false), m_debugTrigger(false), m_acceleration(0.0f), m_speed(0.0f)
+	m_errorCode(EC_NONE), m_ipm(IPM_LANEASSIST), m_paramPage(PP_BLUR), m_running(false), m_interrupted(false), m_lastServo(0), m_debugTrigger(false),
+	m_acceleration(0.0f), m_speed(0.0f)
 {
 	m_pSocketMgr = new SocketMgr(this);
 	m_pCtrlMgr = new ControlMgr();
@@ -173,6 +174,31 @@ void BusMgr::ApplyAcceleration()
 
 	SetReverse(m_speed < 0.0f);
 	SetSpeed(speed);
+}
+
+void BusMgr::SwitchLane(eLane toLane)
+{
+	// TODO: Need mutex?
+	if (toLane == LEFT_LANE)
+	{
+		if ( m_lockedLanes[LEFT_LANE].isActive() && (m_lockedLanes[LEFT_LANE].xTarget >= 20) )
+		{
+			m_searchRange[RIGHT_LANE][0] = m_lockedLanes[LEFT_LANE].xTarget - 20;
+			m_lastServo = TranslateXTargetToServo(RIGHT_LANE, m_searchRange[RIGHT_LANE][0] + 10);
+
+			cout << "  DEBUG: Lane shift left; new right lane search start: " << m_searchRange[RIGHT_LANE][0] << endl;
+		}
+	}
+	else
+	{
+		if ( m_lockedLanes[RIGHT_LANE].isActive() && (m_lockedLanes[RIGHT_LANE].xTarget <= 140) )
+		{
+			m_searchRange[LEFT_LANE][0] = m_lockedLanes[RIGHT_LANE].xTarget + 20;
+			m_lastServo = TranslateXTargetToServo(LEFT_LANE, m_searchRange[LEFT_LANE][0] - 10);
+
+			cout << "  DEBUG: Lane shift right; new left lane search start: " << m_searchRange[LEFT_LANE][0] << endl;
+		}
+	}
 }
 
 void BusMgr::WorkerFunc()
@@ -559,61 +585,68 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	}
 
 	// Perform lane transform and adapt target X values for each lane to target servo positions.
-	const int leftLaneCenterX = 31;
-	const int rightLaneCenterX = 143;
-	const float offsetToServoFactor = 3.0f;
 	const int maxServoDelta = 10;
 	const int searchBuffer = 20;
-
-	static int lastServo = 0;
 
 	int leftTarget = 0;
 	LaneInfo leftLaneInfo;
 	//int leftAngle = 0;
 	if (m_pLaneTransform->LaneSearch(leftEdges, LEFT_LANE, m_searchRange[LEFT_LANE], leftLaneInfo, debugOutput))
 	{
-		leftTarget = ControlMgr::cDefServo + static_cast<int>( (leftLaneInfo.xTarget - leftLaneCenterX) / offsetToServoFactor );
+		leftTarget = TranslateXTargetToServo(LEFT_LANE, leftLaneInfo.xTarget);
 		m_pLaneTransform->RenderLane(frame, leftLaneInfo);
 
-		if ( lastServo && (abs(lastServo - leftTarget) > maxServoDelta) )
+		if ( m_lastServo && (abs(m_lastServo - leftTarget) > maxServoDelta) )
 		{
 			if (debugOutput)
-				cout << "  DEBUG: maxServoDelta exceeded! lastServo=" << lastServo << ", leftTarget=" << leftTarget << endl;
+				cout << "  DEBUG: maxServoDelta exceeded! lastServo=" << m_lastServo << ", leftTarget=" << leftTarget << endl;
+
 			leftTarget = 0;
+			m_lockedLanes[LEFT_LANE].deactivate();
 		}
 		else
 		{
 			m_searchRange[LEFT_LANE][0] = leftLaneInfo.xTarget + searchBuffer;
 			if (m_searchRange[LEFT_LANE][0] >= ROI_WIDTH)
 				m_searchRange[LEFT_LANE][0] = ROI_WIDTH - 1;
+
+			m_lockedLanes[LEFT_LANE] = leftLaneInfo;
 		}
 
 		//leftAngle = m_pLaneTransform->GetLaneAngle(leftLaneInfo.laneId);
 	}
+	else
+		m_lockedLanes[LEFT_LANE].deactivate();
 
 	int rightTarget = 0;
 	LaneInfo rightLaneInfo;
 	//int rightAngle = 0;
 	if (m_pLaneTransform->LaneSearch(rightEdges, RIGHT_LANE, m_searchRange[RIGHT_LANE], rightLaneInfo, debugOutput))
 	{
-		rightTarget = ControlMgr::cDefServo + static_cast<int>( (rightLaneInfo.xTarget - rightLaneCenterX) / offsetToServoFactor );
+		rightTarget = TranslateXTargetToServo(RIGHT_LANE, rightLaneInfo.xTarget);
 		m_pLaneTransform->RenderLane(frame, rightLaneInfo);
 
-		if ( lastServo && (abs(lastServo - rightTarget) > maxServoDelta) )
+		if ( m_lastServo && (abs(m_lastServo - rightTarget) > maxServoDelta) )
 		{
 			if (debugOutput)
-				cout << "  DEBUG: maxServoDelta exceeded! lastServo=" << lastServo << ", rightTarget=" << rightTarget << endl;
+				cout << "  DEBUG: maxServoDelta exceeded! lastServo=" << m_lastServo << ", rightTarget=" << rightTarget << endl;
+
 			rightTarget = 0;
+			m_lockedLanes[RIGHT_LANE].deactivate();
 		}
 		else
 		{
 			m_searchRange[RIGHT_LANE][0] = rightLaneInfo.xTarget - searchBuffer;
 			if (m_searchRange[RIGHT_LANE][0] < 0)
 				m_searchRange[RIGHT_LANE][0] = 0;
+
+			m_lockedLanes[RIGHT_LANE] = rightLaneInfo;
 		}
 
 		//rightAngle = m_pLaneTransform->GetLaneAngle(rightLaneInfo.laneId);
 	}
+	else
+		m_lockedLanes[RIGHT_LANE].deactivate();
 
 	/*
 	if ( abs(leftAngle - rightAngle) >= 96 )
@@ -692,7 +725,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 		else
 			servo = rightTarget;
 
-		lastServo = servo;
+		m_lastServo = servo;
 
 		if ( servo < (ControlMgr::cDefServo - ControlMgr::cServoRange) )
 			servo = ControlMgr::cDefServo - ControlMgr::cServoRange;
@@ -723,4 +756,12 @@ void BusMgr::DisplayCurrentParamPage()
 		cout << "  1) Gradient Threshold" << endl;
 		break;
 	}
+}
+
+int BusMgr::TranslateXTargetToServo(eLane lane, int xTarget) const
+{
+	const int centerX[MAX_LANES] = { 31, 143 };
+	const float offsetToServoFactor = 3.0f;
+
+	return ControlMgr::cDefServo + static_cast<int>( (xTarget - centerX[lane]) / offsetToServoFactor );
 }

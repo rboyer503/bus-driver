@@ -133,6 +133,7 @@ class BusMgr
 	LaneTransform * m_pLaneTransform;
 	LaneInfo m_lockedLanes[MAX_LANES];
 	cv::Vec2i m_searchRange[MAX_LANES];
+	int m_lastServo;
 	bool m_debugTrigger;
 	boost::mutex m_accelMutex;
 	float m_acceleration;
@@ -168,12 +169,14 @@ public:
 	void SetServo(int servo) { m_pCtrlMgr->SetServo(servo); }
 	void SetLaneAssist(bool enable) { m_pCtrlMgr->SetLaneAssist(enable); }
 	bool GetLaneAssist() const { return m_pCtrlMgr->GetLaneAssist(); }
+	void SwitchLane(eLane toLane);
 
 private:
 	void WorkerFunc();
 	bool ProcessFrame(cv::Mat & frame);
 	int LaneAssistComputeServo(cv::Mat & frame);
 	void DisplayCurrentParamPage();
+	int TranslateXTargetToServo(eLane lane, int xTarget) const;
 
 };
 

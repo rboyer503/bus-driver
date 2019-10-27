@@ -211,6 +211,14 @@ void SocketMgr::ReadCommandsWorker()
 		{
 			m_owner->SetLaneAssist(false);
 		}
+		else if (strcmp(recvBuffer, "shiftleft") == 0)
+		{
+			m_owner->SwitchLane(LEFT_LANE);
+		}
+		else if (strcmp(recvBuffer, "shiftright") == 0)
+		{
+			m_owner->SwitchLane(RIGHT_LANE);
+		}
 	}
 
 	cout << "Socket manager command reader thread exited." << endl;
