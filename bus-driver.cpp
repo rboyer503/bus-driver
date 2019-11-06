@@ -144,6 +144,14 @@ int main(void)
 			{
 				busMgr.SetReverse(false);
 			}
+			else if (c == '<')
+			{
+				busMgr.PrevFDR();
+			}
+			else if (c == '>')
+			{
+				busMgr.NextFDR();
+			}
 		}
 
 		busMgr.ApplyAcceleration();

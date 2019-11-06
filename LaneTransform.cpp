@@ -85,7 +85,7 @@ bool LaneTransform::Load()
 bool LaneTransform::LaneSearch(const vector<Vec2i> & edges, const eLane lane, const cv::Vec2i searchRange, LaneInfo & laneInfo, const bool debug /* = false */) const
 {
 	const int cVoteArrayMedianX = c_voteArrayWidth / 2;
-	const int lsLowThreshold = 15;
+	const int lsLowThreshold = 30;
 
 	LaneInfo tempLaneInfo;
 	int step = (lane == LEFT_LANE ? 1 : -1);
@@ -180,7 +180,7 @@ void LaneTransform::RenderLane(Mat & frame, const LaneInfo & laneInfo) const
 	{
 		int x = (*pLane++) - offset;
 		if ( (x >= 0) && (x < frame.cols) )
-			frame.at<uchar>(y, x, 0) = 192;
+			frame.at<uchar>(y, x, 0) = 255;
 	}
 }
 

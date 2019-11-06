@@ -46,6 +46,7 @@ enum eBDImageProcMode
 	IPM_GRAY,
 	IPM_BLUR,
 	IPM_LANEASSIST,
+	IPM_DEBUG,
 	IPM_MAX
 };
 
@@ -108,6 +109,15 @@ struct Config
 	{}
 };
 
+struct FDRecord
+{
+	cv::Mat frame;
+	int target[MAX_LANES];
+	int searchStart[MAX_LANES];
+	int servo;
+	int lastServo;
+};
+
 
 class SocketMgr;
 
@@ -117,6 +127,7 @@ class BusMgr
 	static const char * const c_imageProcModeNames[];
 	static const char * const c_imageProcStageNames[];
 	static const cv::Vec2i c_defaultRange[MAX_LANES];
+	static constexpr int c_maxFDRecords = 150;
 
 	eBDErrorCode m_errorCode;
 	eBDImageProcMode m_ipm;
@@ -138,6 +149,11 @@ class BusMgr
 	boost::mutex m_accelMutex;
 	float m_acceleration;
 	float m_speed;
+	FDRecord m_FDRecords[c_maxFDRecords];
+	int m_currFDRIndex = 0;
+	bool m_FDRFull = false;
+	int m_selectedFDRIndex = 0;
+	bool m_updateFDR = true;
 
 public:
 	BusMgr();
@@ -171,10 +187,30 @@ public:
 	bool GetLaneAssist() const { return m_pCtrlMgr->GetLaneAssist(); }
 	void SwitchLane(eLane toLane);
 
+	void PrevFDR()
+	{
+		int maxIndex = (m_FDRFull ? c_maxFDRecords - 1 : m_currFDRIndex - 1);
+
+		if (--m_selectedFDRIndex < 0)
+			m_selectedFDRIndex = maxIndex;
+
+		m_updateFDR = true;
+	}
+	void NextFDR()
+	{
+		int maxIndex = (m_FDRFull ? c_maxFDRecords - 1 : m_currFDRIndex - 1);
+
+		if (++m_selectedFDRIndex > maxIndex)
+			m_selectedFDRIndex = 0;
+
+		m_updateFDR = true;
+	}
+
 private:
 	void WorkerFunc();
 	bool ProcessFrame(cv::Mat & frame);
 	int LaneAssistComputeServo(cv::Mat & frame);
+	cv::Mat * ProcessDebugFrame();
 	void DisplayCurrentParamPage();
 	int TranslateXTargetToServo(eLane lane, int xTarget) const;
 

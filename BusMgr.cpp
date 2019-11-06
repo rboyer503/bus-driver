@@ -34,7 +34,7 @@ boost::posix_time::time_duration g_diff;
 #define PROFILE_DIFF (boost::posix_time::microsec_clock::local_time() - g_start).total_microseconds()
 
 
-const char * const BusMgr::c_imageProcModeNames[] = {"None", "Gray", "Blur", "Lane Assist"};
+const char * const BusMgr::c_imageProcModeNames[] = {"None", "Gray", "Blur", "Lane Assist", "FDR"};
 const char * const BusMgr::c_imageProcStageNames[] = {"Gray", "Blur", "Lane Assist", "Send", "Total"};
 const cv::Vec2i BusMgr::c_defaultRange[MAX_LANES] = { {ROI_WIDTH / 2, -26}, {ROI_WIDTH / 2, ROI_WIDTH + 26} };
 
@@ -218,12 +218,9 @@ void BusMgr::WorkerFunc()
 			break;
 		}
 
-		// Start accepting commands from client.
-		if (!m_pSocketMgr->StartReadingCommands())
-		{
-			m_errorCode = EC_READCMDFAIL;
-			break;
-		}
+		// Start accepting commands from client and create monitor worker thread.
+		m_pSocketMgr->StartReadingCommands();
+		m_pSocketMgr->StartMonitorThread();
 #endif
 
 		// Initialize video.
@@ -346,6 +343,10 @@ bool BusMgr::ProcessFrame(Mat & frame)
 	{
 		pFrameDisplay = &frame;
 	}
+	else if (ipm == IPM_DEBUG)
+	{
+		pFrameDisplay = ProcessDebugFrame();
+	}
 	else
 	{
 		// Convert to grayscale image, flip, and focus to ROI.
@@ -385,6 +386,7 @@ bool BusMgr::ProcessFrame(Mat & frame)
 						// Lane assist just activated - reset search ranges.
 						for (int i = 0; i < MAX_LANES; ++i)
 							m_searchRange[i] = c_defaultRange[i];
+						m_lastServo = 0;
 					}
 				}
 				else
@@ -392,6 +394,11 @@ bool BusMgr::ProcessFrame(Mat & frame)
 
 				// Run lane assist algorithm to calculate servo position.
 				servo = LaneAssistComputeServo(frameFilter);
+
+				if (m_pCtrlMgr->GetLaneAssist())
+				{
+					m_pCtrlMgr->SetServo(servo);
+				}
 
 				processUs[IPS_LANEASSIST] = PROFILE_DIFF;
 				PROFILE_START;
@@ -401,18 +408,13 @@ bool BusMgr::ProcessFrame(Mat & frame)
 		}
 	}
 
-	if (m_pCtrlMgr->GetLaneAssist())
-	{
-		m_pCtrlMgr->SetServo(servo);
-	}
-
 	// Encode for wifi transmission.
-	vector<uchar> buf;
-	imencode(".bmp", *pFrameDisplay, buf);
+	unique_ptr<vector<uchar> > pBuf = std::make_unique<vector<uchar> >();
+	imencode(".bmp", *pFrameDisplay, *pBuf);
 
 	// Transmit to client.
 #ifdef ENABLE_SOCKET_MGR
-	if (!m_pSocketMgr->SendFrame(&buf[0], buf.size()))
+	if (!m_pSocketMgr->SendFrame(std::move(pBuf)))
 	{
 		// Client probably disconnected - exit streaming loop and wait for a new connection.
 		m_errorCode = EC_SENDFAIL;
@@ -476,6 +478,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	// (Neg->pos gradients can occur from shadows, etc., and should be ignored.  Actual lane markers should be brighter than road color, not darker.)
 	uchar edgeMapNeg[ROI_HEIGHT][ROI_WIDTH] = {};
 	uchar edgeMapPos[ROI_HEIGHT][ROI_WIDTH] = {};
+	uchar edgeMapVert[ROI_HEIGHT][ROI_WIDTH] = {};
 
 	// Actual edge coordinates after neg-->pos gradient culling - separate bins for left and right lanes.
 	// Reserve enough for room to avoid ever needing to resize.
@@ -524,6 +527,28 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 		}
 	}
 
+	// Mark top and bottom y position for sweeping kernel for vertical linear filter.
+	const int yTop = 10 + edgeBuffer; // Ignore top 1/3 of image.
+	int yBottom = frame.rows - edgeBuffer - (sizeof(filter) / sizeof(filter[0]));
+
+	// Build vertical edge map.
+	for (int x = 0; x < frame.cols - 1; ++x)
+	{
+		for (int y = yBottom; y >= yTop; --y)
+		{
+			gradient = (frame.data[ (y * frame.step) + x ] << 1) +
+					   (frame.data[ ((y + 1) * frame.step) + x ]) -
+					   (frame.data[ ((y + 3) * frame.step) + x ]) -
+					   (frame.data[ ((y + 4) * frame.step) + x ] << 1);
+
+			if (gradient >= m_config.gradientThreshold)
+			{
+				edgeMapVert[y + 2][x] = 255;
+				y -= suppressCount;
+			}
+		}
+	}
+
 	// Left lane edge detection with culling of neg->pos gradients.
 	for (int y = startRow; y < ROI_HEIGHT; ++y)
 	{
@@ -539,6 +564,10 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 					if (edgeMapPos[y][x + i])
 					{
 						edgeMapPos[y][x + i] = 0;
+
+						for (int j = 0; j <= i; ++j)
+							edgeMapVert[y][x + j] = 0;
+
 						break;
 					}
 				}
@@ -563,30 +592,43 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 		}
 	}
 
+	// Add vertical gradient edges to both lane edge vectors.
+	for (int x = 0; x < frame.cols - 1; ++x)
+	{
+		for (int y = yBottom + 1; y >= yTop + 3; --y)
+		{
+			if (edgeMapVert[y][x])
+			{
+				leftEdges.push_back(Vec2i(x, y));
+				rightEdges.push_back(Vec2i(x, y));
+			}
+		}
+	}
+
 	// Show detected edges on image for diagnostics purposes.
 	// Bounce between left and right edges.
-	static int diagDisplayCount = 0;
-	if (++diagDisplayCount == 10)
-		diagDisplayCount = 0;
+	//static int diagDisplayCount = 0;
+	//if (++diagDisplayCount == 10)
+	//	diagDisplayCount = 0;
 
-	if (diagDisplayCount < 5)
-	{
+	//if (diagDisplayCount < 5)
+	//{
 		for (Vec2i & edge : leftEdges)
 		{
-			frame.at<uchar>(edge[1], edge[0], 0) = 255;
+			frame.at<uchar>(edge[1], edge[0], 0) = 128;
 		}
-	}
-	else
-	{
+	//}
+	//else
+	//{
 		for (Vec2i & edge : rightEdges)
 		{
-			frame.at<uchar>(edge[1], edge[0], 0) = 255;
+			frame.at<uchar>(edge[1], edge[0], 0) = 192;
 		}
-	}
+	//}
 
 	// Perform lane transform and adapt target X values for each lane to target servo positions.
-	const int maxServoDelta = 10;
-	const int searchBuffer = 20;
+	const int maxServoDelta = 25;
+	const int searchBuffer = 60;
 
 	int leftTarget = 0;
 	LaneInfo leftLaneInfo;
@@ -703,6 +745,9 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	//const int targetDiffThreshold = 10; // If left and right lanes disagree strongly, ignore the one furthest from default (straight) position.
 	//int expectTarget = ControlMgr::cDefServo + ( (leftAngle + rightAngle) / 4 );
 
+	FDRecord & currFDR = m_FDRecords[m_currFDRIndex];
+	currFDR.lastServo = m_lastServo;
+
 	if (leftTarget || rightTarget)
 	{
 		if (leftTarget && rightTarget)
@@ -741,7 +786,36 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 		cout << "  Target: " << leftTarget << ", " << rightTarget << "; Servo: " << servo << endl;
 	}
 
+	currFDR.frame = frame;
+	currFDR.target[LEFT_LANE] = leftTarget;
+	currFDR.target[RIGHT_LANE] = rightTarget;
+	currFDR.searchStart[LEFT_LANE] = m_searchRange[LEFT_LANE][0];
+	currFDR.searchStart[RIGHT_LANE] = m_searchRange[RIGHT_LANE][0];
+	currFDR.servo = servo;
+	m_selectedFDRIndex = m_currFDRIndex++;
+	if (m_currFDRIndex == c_maxFDRecords)
+	{
+		m_currFDRIndex = 0;
+		m_FDRFull = true;
+	}
+
 	return servo;
+}
+
+Mat * BusMgr::ProcessDebugFrame()
+{
+	FDRecord & currFDR = m_FDRecords[m_selectedFDRIndex];
+	if (m_updateFDR)
+	{
+		m_updateFDR = false;
+
+		cout << "FDR #" << m_selectedFDRIndex << ":" << endl;
+		cout << "  Left/right target = " << currFDR.target[LEFT_LANE] << "/" << currFDR.target[RIGHT_LANE] << endl;
+		cout << "  Left/right search start = " << currFDR.searchStart[LEFT_LANE] << "/" << currFDR.searchStart[RIGHT_LANE] << endl;
+		cout << "  Servo/last servo = " << currFDR.servo << "/" << currFDR.lastServo << endl;
+	}
+
+	return &(currFDR.frame);
 }
 
 void BusMgr::DisplayCurrentParamPage()
@@ -761,7 +835,9 @@ void BusMgr::DisplayCurrentParamPage()
 int BusMgr::TranslateXTargetToServo(eLane lane, int xTarget) const
 {
 	const int centerX[MAX_LANES] = { 31, 143 };
-	const float offsetToServoFactor = 3.0f;
+
+	// TODO: Try making servo factor adaptive (inverse relationship with speed).
+	const float offsetToServoFactor = 2.0f; // 3.0f;
 
 	return ControlMgr::cDefServo + static_cast<int>( (xTarget - centerX[lane]) / offsetToServoFactor );
 }

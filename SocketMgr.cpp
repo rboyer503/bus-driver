@@ -19,7 +19,7 @@ using namespace std;
 
 SocketMgr::SocketMgr(BusMgr * owner) :
 	m_owner(owner), m_pSocketMon(NULL), m_pSocketCmd(NULL),
-	m_connected(false), m_reading(false)
+	m_connected(false), m_reading(false), m_monitoring(false)
 {
 }
 
@@ -29,6 +29,9 @@ SocketMgr::~SocketMgr()
 
 	if (m_thread.joinable())
 		m_thread.join();
+
+	if (m_monitorThread.joinable())
+		m_monitorThread.join();
 
 	cout << "Socket manager destroyed." << endl;
 }
@@ -100,14 +103,20 @@ bool SocketMgr::WaitForConnection()
 
 	cout << "Socket manager accepted new connection." << endl;
 	m_connected = true;
+	m_droppedFrames = 0;
 	return true;
 }
 
-bool SocketMgr::StartReadingCommands()
+void SocketMgr::StartReadingCommands()
 {
 	m_reading = true;
 	m_thread = boost::thread(&SocketMgr::ReadCommandsWorker, this);
-	return true;
+}
+
+void SocketMgr::StartMonitorThread()
+{
+	m_monitoring = true;
+	m_monitorThread = boost::thread(&SocketMgr::MonitorWorker, this);
 }
 
 bool SocketMgr::ReleaseConnection()
@@ -123,6 +132,9 @@ bool SocketMgr::ReleaseConnection()
 
 	if (m_thread.joinable())
 		m_thread.join();
+
+	if (m_monitorThread.joinable())
+		m_monitorThread.join();
 
 	// Close actual sockets.
 	if (m_pSocketMon)
@@ -147,10 +159,20 @@ void SocketMgr::Close()
 	cout << "Command socket released..." << endl;
 }
 
-bool SocketMgr::SendFrame(unsigned char * pRawData, int size)
+bool SocketMgr::SendFrame(unique_ptr<vector<unsigned char> > pBuf)
 {
-	// Delegate to the monitor socket.
-	return m_pSocketMon->TransmitSizedMessage(pRawData, size);
+	if (!m_monitoring)
+		return false;
+
+	{
+		boost::mutex::scoped_lock lock(m_monitorMutex);
+		if (!m_pCurrBuffer)
+			m_pCurrBuffer = std::move(pBuf);
+		else
+			++m_droppedFrames;
+	}
+
+	return true;
 }
 
 void SocketMgr::ReadCommandsWorker()
@@ -222,4 +244,30 @@ void SocketMgr::ReadCommandsWorker()
 	}
 
 	cout << "Socket manager command reader thread exited." << endl;
+}
+
+void SocketMgr::MonitorWorker()
+{
+	// Transmit frames to client for monitoring as they become available.
+	while (true)
+	{
+		boost::this_thread::sleep(boost::posix_time::milliseconds(5));
+
+		unique_ptr<vector<unsigned char> > pBuf;
+
+		{
+			boost::mutex::scoped_lock lock(m_monitorMutex);
+			if (!m_pCurrBuffer)
+				continue;
+			else
+				pBuf = std::move(m_pCurrBuffer);
+		}
+
+		// Delegate to the monitor socket.
+		if (!m_pSocketMon->TransmitSizedMessage(&(*pBuf)[0], pBuf->size()))
+			break;
+	}
+
+	m_monitoring = false;
+	cout << "Socket manager monitor thread exited." << endl;
 }
