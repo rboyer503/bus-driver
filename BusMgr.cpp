@@ -460,69 +460,78 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 		cout << endl << "Debug output" << endl;
 	}
 
-	// Perform edge detection using simple linear filter.
-	// Left lane and right lane edges handled independently.
-	// Sweep right to left for left lane edges, and vice versa for right lane edges.
-	// Apply suppression after an edge is detected as a simplistic "edge thinning".
-
+	// Perform edge detection using simple linear filters.
+	// Lane markings are characterized by a positive gradient quickly followed by a negative gradient.
 	const int filter[] = {2, 1, 0, -1, -2}; // Not directly used due to optimizations.
-	const int edgeBuffer = 3; // Ignore a few pixels on far left and far right edges of image.
-	const int suppressCount = 10; // Skip several pixels after an edge is detected.
-	const int startRow = 0;
+	const int edgeBuffer = 0; // Ignore a few pixels along border of image.
+	const int onLaneCountdownInit = 30; // Once positive gradient found, search for corresponding negative gradient for this many steps.
 
-	uchar * pRow;
-	int gradient;
-
-	// Negative and positive edge maps for left and right lanes respectively.
-	// Edge maps are built so that edges resulting from neg->pos gradients can be culled.
-	// (Neg->pos gradients can occur from shadows, etc., and should be ignored.  Actual lane markers should be brighter than road color, not darker.)
-	uchar edgeMapNeg[ROI_HEIGHT][ROI_WIDTH] = {};
-	uchar edgeMapPos[ROI_HEIGHT][ROI_WIDTH] = {};
-	uchar edgeMapVert[ROI_HEIGHT][ROI_WIDTH] = {};
-
-	// Actual edge coordinates after neg-->pos gradient culling - separate bins for left and right lanes.
+	// Actual edge coordinates; separate bins for left and right lanes.
 	// Reserve enough for room to avoid ever needing to resize.
 	vector<Vec2i> leftEdges;
 	vector<Vec2i> rightEdges;
-	leftEdges.reserve(450);
+	leftEdges.reserve(450); // TODO: Tune this.
 	rightEdges.reserve(450);
 
 	// Mark left and right X position for sweeping kernel for linear filter.
 	int xLeft = edgeBuffer;
 	int xRight = frame.cols - edgeBuffer - (sizeof(filter) / sizeof(filter[0]));
-	if (debugOutput)
-		cout << "  xLeft=" << xLeft << ", xRight=" << xRight << endl;
 
-	// Build edge maps.
-	for (int y = startRow; y < frame.rows - 1; ++y)
+	// Edge detection implementation.
+	uchar * pRow;
+	int gradient;
+	int onLaneCountdown;
+	int laneStart = 0;
+	bool laneFound;
+
+	for (int y = 0; y < frame.rows - 1; ++y)
 	{
 		pRow = frame.ptr(y);
-
-		for (int x = xRight; x >= xLeft; --x)
-		{
-			gradient = (pRow[x] << 1) +
-					   (pRow[x + 1]) -
-					   (pRow[x + 3]) -
-					   (pRow[x + 4] << 1);
-
-			if (gradient >= m_config.gradientThreshold)
-			{
-				edgeMapNeg[y][x + 2] = 255;
-				x -= suppressCount;
-			}
-		}
+		onLaneCountdown = 0;
+		laneFound = false;
 
 		for (int x = xLeft; x <= xRight; ++x)
 		{
-			gradient = -(pRow[x] << 1) -
-					   (pRow[x + 1]) +
-					   (pRow[x + 3]) +
-					   (pRow[x + 4] << 1);
-
-			if (gradient >= m_config.gradientThreshold)
+			if (!onLaneCountdown)
 			{
-				edgeMapPos[y][x + 2] = 255;
-				x += suppressCount;
+				// Searching for positive gradient.
+				gradient = -(pRow[x] << 1) -
+						    (pRow[x + 1]) +
+							(pRow[x + 3]) +
+							(pRow[x + 4] << 1);
+
+				if (gradient >= m_config.gradientThreshold)
+				{
+					if (x == xLeft)
+						continue;
+
+					// Track edge position and begin negative gradient search.
+					onLaneCountdown = onLaneCountdownInit;
+					laneStart = x + 2;
+				}
+			}
+			else
+			{
+				// Searching for negative gradient.
+				gradient = (pRow[x] << 1) +
+						   (pRow[x + 1]) -
+						   (pRow[x + 3]) -
+						   (pRow[x + 4] << 1);
+
+				if (gradient >= m_config.gradientThreshold)
+				{
+					laneFound = true;
+				}
+				else if (laneFound)
+				{
+					// Pos -> neg gradient found - track edges in left and right lane bins.
+					leftEdges.push_back(Vec2i(x + 2 - 1, y)); // We're now 1 past the edge - compensate.
+					rightEdges.push_back(Vec2i(laneStart, y));
+					onLaneCountdown = 0;
+					laneFound = false;
+				}
+				else
+					--onLaneCountdown;
 			}
 		}
 	}
@@ -531,100 +540,61 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	const int yTop = 10 + edgeBuffer; // Ignore top 1/3 of image.
 	int yBottom = frame.rows - edgeBuffer - (sizeof(filter) / sizeof(filter[0]));
 
-	// Build vertical edge map.
+	// Edge detection (vertical gradients).
 	for (int x = 0; x < frame.cols - 1; ++x)
 	{
+		onLaneCountdown = 0;
+
 		for (int y = yBottom; y >= yTop; --y)
 		{
-			gradient = (frame.data[ (y * frame.step) + x ] << 1) +
-					   (frame.data[ ((y + 1) * frame.step) + x ]) -
-					   (frame.data[ ((y + 3) * frame.step) + x ]) -
-					   (frame.data[ ((y + 4) * frame.step) + x ] << 1);
-
-			if (gradient >= m_config.gradientThreshold)
+			if (!onLaneCountdown)
 			{
-				edgeMapVert[y + 2][x] = 255;
-				y -= suppressCount;
-			}
-		}
-	}
+				// Searching for negative gradient (swapped for vertical edge detection).
+				gradient = (frame.data[ (y * frame.step) + x ] << 1) +
+						   (frame.data[ ((y + 1) * frame.step) + x ]) -
+						   (frame.data[ ((y + 3) * frame.step) + x ]) -
+						   (frame.data[ ((y + 4) * frame.step) + x ] << 1);
 
-	// Left lane edge detection with culling of neg->pos gradients.
-	for (int y = startRow; y < ROI_HEIGHT; ++y)
-	{
-		for (int x = (xLeft + 3); x <= (xRight + 1); ++x)  // Narrow by one to mitigate "compression" of edges along far left and right.
-		{
-			if (edgeMapNeg[y][x])
-			{
-				// Perform culling if necessary.
-				int maxOffset = min(10, (xRight + 1 - x));
-				int i;
-				for (i = 1; i <= maxOffset; ++i)
+				if (gradient >= m_config.gradientThreshold)
 				{
-					if (edgeMapPos[y][x + i])
-					{
-						edgeMapPos[y][x + i] = 0;
-
-						for (int j = 0; j <= i; ++j)
-							edgeMapVert[y][x + j] = 0;
-
+					if (y == yBottom)
 						break;
-					}
-				}
 
-				if (i > maxOffset)
+					// Track edge position and begin positive gradient search.
+					onLaneCountdown = onLaneCountdownInit;
+					laneStart = y + 2;
+				}
+			}
+			else
+			{
+				// Searching for negative gradient.
+				gradient = -(frame.data[ (y * frame.step) + x ] << 1) -
+							(frame.data[ ((y + 1) * frame.step) + x ]) +
+							(frame.data[ ((y + 3) * frame.step) + x ]) +
+							(frame.data[ ((y + 4) * frame.step) + x ] << 1);
+
+				if (gradient >= m_config.gradientThreshold)
 				{
-					leftEdges.push_back(Vec2i(x, y));
+					// Neg -> pos gradient found - track same edge in left and right lane bins.
+					// (Same edge is deliberately loaded to both bins this time.)
+					leftEdges.push_back(Vec2i(x, laneStart));
+					rightEdges.push_back(Vec2i(x, laneStart));
+
+					// In vertical case, no need to continue on this scan line.
+					break;
 				}
-			}
-		}
-	}
-
-	// Right lane edge detection - culling was already complete.
-	for (int y = startRow; y < ROI_HEIGHT; ++y)
-	{
-		for (int x = (xLeft + 3); x <= (xRight + 1); ++x)
-		{
-			if (edgeMapPos[y][x])
-			{
-				rightEdges.push_back(Vec2i(x, y));
-			}
-		}
-	}
-
-	// Add vertical gradient edges to both lane edge vectors.
-	for (int x = 0; x < frame.cols - 1; ++x)
-	{
-		for (int y = yBottom + 1; y >= yTop + 3; --y)
-		{
-			if (edgeMapVert[y][x])
-			{
-				leftEdges.push_back(Vec2i(x, y));
-				rightEdges.push_back(Vec2i(x, y));
+				else
+					--onLaneCountdown;
 			}
 		}
 	}
 
 	// Show detected edges on image for diagnostics purposes.
-	// Bounce between left and right edges.
-	//static int diagDisplayCount = 0;
-	//if (++diagDisplayCount == 10)
-	//	diagDisplayCount = 0;
+	for (Vec2i & edge : leftEdges)
+		frame.at<uchar>(edge[1], edge[0], 0) = 128;
 
-	//if (diagDisplayCount < 5)
-	//{
-		for (Vec2i & edge : leftEdges)
-		{
-			frame.at<uchar>(edge[1], edge[0], 0) = 128;
-		}
-	//}
-	//else
-	//{
-		for (Vec2i & edge : rightEdges)
-		{
-			frame.at<uchar>(edge[1], edge[0], 0) = 192;
-		}
-	//}
+	for (Vec2i & edge : rightEdges)
+		frame.at<uchar>(edge[1], edge[0], 0) = 192;
 
 	// Perform lane transform and adapt target X values for each lane to target servo positions.
 	const int maxServoDelta = 25;

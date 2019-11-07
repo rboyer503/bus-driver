@@ -28,8 +28,8 @@ LaneTransform::LaneTransform()
 	for (int y = 0; y < divisionSize; ++y)
 	{
 		m_weightArray[y] = 1;
-		m_weightArray[y + divisionSize] = 2;
-		m_weightArray[y + (divisionSize * 2)] = 4;
+		m_weightArray[y + divisionSize] = 1; //2;
+		m_weightArray[y + (divisionSize * 2)] = 1; //4;
 	}
 
 	for (int laneId = 0; laneId < c_laneVariants; ++laneId)
@@ -85,7 +85,7 @@ bool LaneTransform::Load()
 bool LaneTransform::LaneSearch(const vector<Vec2i> & edges, const eLane lane, const cv::Vec2i searchRange, LaneInfo & laneInfo, const bool debug /* = false */) const
 {
 	const int cVoteArrayMedianX = c_voteArrayWidth / 2;
-	const int lsLowThreshold = 30;
+	const int lsLowThreshold = 10; //20;
 
 	LaneInfo tempLaneInfo;
 	int step = (lane == LEFT_LANE ? 1 : -1);
