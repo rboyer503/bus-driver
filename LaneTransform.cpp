@@ -86,6 +86,9 @@ bool LaneTransform::LaneSearch(const vector<Vec2i> & edges, const eLane lane, co
 {
 	const int cVoteArrayMedianX = c_voteArrayWidth / 2;
 	const int lsLowThreshold = 10; //20;
+	const int maxAngleDeviation = 45;
+
+	bool limitAngleDeviation = laneInfo.isActive();
 
 	LaneInfo tempLaneInfo;
 	int step = (lane == LEFT_LANE ? 1 : -1);
@@ -129,13 +132,20 @@ bool LaneTransform::LaneSearch(const vector<Vec2i> & edges, const eLane lane, co
 		}
 
 		if (debug)
-			cout << "    Debug xTarget=" << (cVoteArrayMedianX - offset) << ", maxVotes=" << currMaxVotes << ", bestLaneId=" << currBestLaneId << endl;
+			cout << "    Debug xTarget=" << (cVoteArrayMedianX - offset) << ", maxVotes=" << currMaxVotes << ", bestLaneId=" << currBestLaneId <<
+					", angle=" << GetLaneAngle(currBestLaneId) << endl;
 
 		if (currMaxVotes > tempLaneInfo.votes)
 		{
-			tempLaneInfo.votes = currMaxVotes;
-			tempLaneInfo.laneId = currBestLaneId;
-			tempLaneInfo.xTarget = cVoteArrayMedianX - offset;
+			int tempAngle = GetLaneAngle(currBestLaneId);
+			if ( !limitAngleDeviation ||
+				 ( abs(tempAngle - laneInfo.angle) <= maxAngleDeviation ) )
+			{
+				tempLaneInfo.votes = currMaxVotes;
+				tempLaneInfo.laneId = currBestLaneId;
+				tempLaneInfo.xTarget = cVoteArrayMedianX - offset;
+				tempLaneInfo.angle = tempAngle;
+			}
 		}
 
 		switch (lss)
@@ -155,17 +165,19 @@ bool LaneTransform::LaneSearch(const vector<Vec2i> & edges, const eLane lane, co
 			break;
 	}
 
-	if (lss == LSS_WAIT_FOR_LOW_THRES)
-	//if (tempLaneInfo.votes < 10)
+	//if (lss == LSS_WAIT_FOR_LOW_THRES)
+	if (tempLaneInfo.votes < lsLowThreshold)
 	{
 		if (debug)
 			cout << "    Debug final: lane not found" << endl;
 
+		laneInfo.deactivate();
 		return false;
 	}
 
 	if (debug)
-		cout << "    Debug final: xTarget=" << tempLaneInfo.xTarget << ", maxVotes=" << tempLaneInfo.votes << ", bestLaneId=" << tempLaneInfo.laneId << endl;
+		cout << "    Debug final: xTarget=" << tempLaneInfo.xTarget << ", maxVotes=" << tempLaneInfo.votes << ", bestLaneId=" << tempLaneInfo.laneId <<
+				", angle=" << tempLaneInfo.angle << endl;
 
 	laneInfo = tempLaneInfo;
 	return true;

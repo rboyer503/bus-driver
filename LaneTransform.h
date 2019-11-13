@@ -27,8 +27,9 @@ struct LaneInfo
 	int xTarget;
 	int laneId;
 	int votes;
+	int angle;
 
-	LaneInfo() : xTarget(0), laneId(0), votes(0)
+	LaneInfo() : xTarget(0), laneId(0), votes(0), angle(0)
 	{}
 
 	void deactivate() { votes = 0; }

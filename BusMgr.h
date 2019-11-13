@@ -18,7 +18,7 @@
 #include "LaneTransform.h"
 #include "Constants.h"
 
-#define FRAME_SKIP 2
+#define FRAME_SKIP 1
 #define FRAME_BACKLOG_MIN -5
 
 #define STATUS_SUPPRESS_DELAY 10
@@ -116,6 +116,7 @@ struct FDRecord
 	int searchStart[MAX_LANES];
 	int servo;
 	int lastServo;
+	int lastAngle;
 };
 
 
@@ -213,6 +214,7 @@ private:
 	cv::Mat * ProcessDebugFrame();
 	void DisplayCurrentParamPage();
 	int TranslateXTargetToServo(eLane lane, int xTarget) const;
+	void TrimSearchRange(eLane lane, cv::Vec2i & searchRange) const;
 
 };
 
