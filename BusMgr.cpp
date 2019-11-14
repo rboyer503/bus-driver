@@ -34,6 +34,13 @@ boost::posix_time::time_duration g_diff;
 #define PROFILE_DIFF (boost::posix_time::microsec_clock::local_time() - g_start).total_microseconds()
 
 
+template <typename T>
+T clamp(const T& val, const T& lower, const T& upper)
+{
+	return max(lower, min(val, upper));
+}
+
+
 const char * const BusMgr::c_imageProcModeNames[] = {"None", "Gray", "Blur", "Lane Assist", "FDR"};
 const char * const BusMgr::c_imageProcStageNames[] = {"Gray", "Blur", "Lane Assist", "Send", "Total"};
 const cv::Vec2i BusMgr::c_defaultRange[MAX_LANES] = { {ROI_WIDTH / 2, -26}, {ROI_WIDTH / 2, ROI_WIDTH + 26} };
@@ -179,6 +186,7 @@ void BusMgr::ApplyAcceleration()
 void BusMgr::SwitchLane(eLane toLane)
 {
 	// TODO: Need mutex?
+	// TODO: Revisit implementation due to lane assist algorithm modifications.
 	if (toLane == LEFT_LANE)
 	{
 		if ( m_lockedLanes[LEFT_LANE].isActive() && (m_lockedLanes[LEFT_LANE].xTarget >= 20) )
@@ -467,7 +475,6 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	// Perform edge detection using simple linear filters.
 	// Lane markings are characterized by a positive gradient quickly followed by a negative gradient.
 	const int filter[] = {2, 1, 0, -1, -2}; // Not directly used due to optimizations.
-	const int edgeBuffer = 0; // Ignore a few pixels along border of image.
 	const int onLaneCountdownInit = 30; // Once positive gradient found, search for corresponding negative gradient for this many steps.
 
 	// Actual edge coordinates; separate bins for left and right lanes.
@@ -478,8 +485,8 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	rightEdges.reserve(450);
 
 	// Mark left and right X position for sweeping kernel for linear filter.
-	int xLeft = edgeBuffer;
-	int xRight = frame.cols - edgeBuffer - (sizeof(filter) / sizeof(filter[0]));
+	int xLeft = 0;
+	int xRight = frame.cols - (sizeof(filter) / sizeof(filter[0]));
 
 	// Edge detection implementation.
 	uchar * pRow;
@@ -541,8 +548,8 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	}
 
 	// Mark top and bottom y position for sweeping kernel for vertical linear filter.
-	const int yTop = 10 + edgeBuffer; // Ignore top 1/3 of image.
-	int yBottom = frame.rows - edgeBuffer - (sizeof(filter) / sizeof(filter[0]));
+	const int yTop = 10; // Ignore top 1/3 of image.
+	int yBottom = frame.rows - (sizeof(filter) / sizeof(filter[0]));
 
 	// Edge detection (vertical gradients).
 	const int angleThreshold = 30;
@@ -608,104 +615,34 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 		frame.at<uchar>(edge[1], edge[0], 0) = 192;
 
 	// Perform lane transform and adapt target X values for each lane to target servo positions.
-	//const int maxServoDelta = 25;
 	const int searchBuffer = 40; // A little under half lane width.
-
 	int leftTarget = 0;
-	//LaneInfo leftLaneInfo;
 	int totalAngle = 0;
 	int activeCount = 0;
-	//const int invalidAngle = -1;
-	//const int maxAngleDelta = 30;
-	//static int lastLeftAngle = invalidAngle;
-	//int currAngle;
 	if (m_pLaneTransform->LaneSearch(leftEdges, LEFT_LANE, m_searchRange[LEFT_LANE], m_lockedLanes[LEFT_LANE], debugOutput))
 	{
-		leftTarget = TranslateXTargetToServo(LEFT_LANE, m_lockedLanes[LEFT_LANE].xTarget); //leftLaneInfo.xTarget);
-		m_pLaneTransform->RenderLane(frame, m_lockedLanes[LEFT_LANE]); //leftLaneInfo);
+		leftTarget = TranslateXTargetToServo(LEFT_LANE, m_lockedLanes[LEFT_LANE].xTarget);
+		m_pLaneTransform->RenderLane(frame, m_lockedLanes[LEFT_LANE]);
 
-		/*
-		if ( m_lastServo && (abs(m_lastServo - leftTarget) > maxServoDelta) )
-		{
-			if (debugOutput)
-				cout << "  DEBUG: maxServoDelta exceeded! lastServo=" << m_lastServo << ", leftTarget=" << leftTarget << endl;
+		m_searchRange[LEFT_LANE] = Vec2i(m_lockedLanes[LEFT_LANE].xTarget + searchBuffer, m_lockedLanes[LEFT_LANE].xTarget - searchBuffer);
+		TrimSearchRange(LEFT_LANE, m_searchRange[LEFT_LANE]);
 
-			leftTarget = 0;
-			m_lockedLanes[LEFT_LANE].deactivate();
-		}
-		else
-		{
-		*/
-		/*
-			currAngle = m_pLaneTransform->GetLaneAngle(leftLaneInfo.laneId);
-			if ( (lastLeftAngle != invalidAngle) && (abs(lastLeftAngle - currAngle) > maxAngleDelta) )
-			{
-				if (debugOutput)
-					cout << "  DEBUG: maxAngleDelta exceeded on left lane! lastAngle=" << lastLeftAngle << ", currAngle=" << currAngle << endl;
-
-				leftTarget = 0;
-				m_lockedLanes[LEFT_LANE].deactivate();
-			}
-			else
-			{
-				//m_lockedLanes[LEFT_LANE] = leftLaneInfo;
-		*/
-				m_searchRange[LEFT_LANE] = Vec2i(m_lockedLanes[LEFT_LANE].xTarget + searchBuffer, m_lockedLanes[LEFT_LANE].xTarget - searchBuffer);
-				TrimSearchRange(LEFT_LANE, m_searchRange[LEFT_LANE]);
-
-				totalAngle += m_lockedLanes[LEFT_LANE].angle; // currAngle;
-				++activeCount;
-			//}
-		//}
+		totalAngle += m_lockedLanes[LEFT_LANE].angle;
+		++activeCount;
 	}
-	//else
-	//	m_lockedLanes[LEFT_LANE].deactivate();
 
 	int rightTarget = 0;
-	//LaneInfo rightLaneInfo;
-	//static int lastRightAngle = invalidAngle;
 	if (m_pLaneTransform->LaneSearch(rightEdges, RIGHT_LANE, m_searchRange[RIGHT_LANE], m_lockedLanes[RIGHT_LANE], debugOutput))
 	{
 		rightTarget = TranslateXTargetToServo(RIGHT_LANE, m_lockedLanes[RIGHT_LANE].xTarget);
 		m_pLaneTransform->RenderLane(frame, m_lockedLanes[RIGHT_LANE]);
 
-		/*
-		if ( m_lastServo && (abs(m_lastServo - rightTarget) > maxServoDelta) )
-		{
-			if (debugOutput)
-				cout << "  DEBUG: maxServoDelta exceeded! lastServo=" << m_lastServo << ", rightTarget=" << rightTarget << endl;
+		m_searchRange[RIGHT_LANE] = Vec2i(m_lockedLanes[RIGHT_LANE].xTarget - searchBuffer, m_lockedLanes[RIGHT_LANE].xTarget + searchBuffer);
+		TrimSearchRange(RIGHT_LANE, m_searchRange[RIGHT_LANE]);
 
-			rightTarget = 0;
-			m_lockedLanes[RIGHT_LANE].deactivate();
-		}
-		else
-		{
-		*/
-		/*
-			currAngle = m_pLaneTransform->GetLaneAngle(rightLaneInfo.laneId);
-			if ( (lastRightAngle != invalidAngle) && (abs(lastRightAngle - currAngle) > maxAngleDelta) )
-			{
-				if (debugOutput)
-					cout << "  DEBUG: maxAngleDelta exceeded on right lane! lastAngle=" << lastRightAngle << ", currAngle=" << currAngle << endl;
-
-				rightTarget = 0;
-				m_lockedLanes[RIGHT_LANE].deactivate();
-			}
-			else
-			{
-				m_lockedLanes[RIGHT_LANE] = rightLaneInfo;
-		*/
-				m_searchRange[RIGHT_LANE] = Vec2i(m_lockedLanes[RIGHT_LANE].xTarget - searchBuffer, m_lockedLanes[RIGHT_LANE].xTarget + searchBuffer);
-				TrimSearchRange(RIGHT_LANE, m_searchRange[RIGHT_LANE]);
-
-				totalAngle += m_lockedLanes[RIGHT_LANE].angle;
-				++activeCount;
-			//}
-		//}
+		totalAngle += m_lockedLanes[RIGHT_LANE].angle;
+		++activeCount;
 	}
-	//else
-	//	m_lockedLanes[RIGHT_LANE].deactivate();
-
 
 	if (activeCount)
 	{
@@ -715,116 +652,27 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 		{
 			if (m_lockedLanes[LEFT_LANE].isActive())
 			{
-				//if (m_searchRange[RIGHT_LANE][0] < m_searchRange[LEFT_LANE][0] + searchBuffer)
-				{
-					m_searchRange[RIGHT_LANE][0] = m_searchRange[LEFT_LANE][0] + searchBuffer;
-					m_searchRange[RIGHT_LANE][1] = c_defaultRange[RIGHT_LANE][1];
-				}
+				m_searchRange[RIGHT_LANE][0] = m_searchRange[LEFT_LANE][0];
+				m_searchRange[RIGHT_LANE][1] = c_defaultRange[RIGHT_LANE][1];
+				TrimSearchRange(RIGHT_LANE, m_searchRange[RIGHT_LANE]);
 			}
 			else
 			{
-				//if (m_searchRange[LEFT_LANE][0] > m_searchRange[RIGHT_LANE][0] - searchBuffer)
-				{
-					m_searchRange[LEFT_LANE][0] = m_searchRange[RIGHT_LANE][0] - searchBuffer;
-					m_searchRange[LEFT_LANE][1] = c_defaultRange[LEFT_LANE][1];
-				}
+				m_searchRange[LEFT_LANE][0] = m_searchRange[RIGHT_LANE][0];
+				m_searchRange[LEFT_LANE][1] = c_defaultRange[LEFT_LANE][1];
+				TrimSearchRange(LEFT_LANE, m_searchRange[LEFT_LANE]);
 			}
 		}
 	}
-
-	/*
-		int searchStart;
-		if (activeCount == 2)
-			searchStart = (leftLaneInfo.xTarget + rightLaneInfo.xTarget) / 2;
-		else if (m_lockedLanes[LEFT_LANE].isActive())
-			searchStart = leftLaneInfo.xTarget + searchBuffer;
-		else
-			searchStart = rightLaneInfo.xTarget - searchBuffer;
-
-		if (searchStart < 0)
-			searchStart = 0;
-		else if (searchStart >= ROI_WIDTH)
-			searchStart = ROI_WIDTH - 1;
-
-		m_searchRange[RIGHT_LANE][0] = m_searchRange[LEFT_LANE][0] =  searchStart;
-	}
-	*/
-
-	/*
-	if ( abs(leftAngle - rightAngle) >= 96 )
-	{
-		if (leftLaneInfo.votes > rightLaneInfo.votes)
-			rightTarget = 0;
-		else
-			leftTarget = 0;
-	}
-	*/
-
-	/*
-	static int lastServo = 0;
-	if (leftTarget && rightTarget)
-	{
-		//const int closeFactor = 20;
-		//const int closeCutoff = (ROI_WIDTH >> 1) + 10;
-		//int leftCloserX, rightCloserX;
-		if (leftLaneInfo.xTarget >= rightLaneInfo.xTarget)
-		{
-			if (lastServo)
-			{
-				if (debugOutput)
-					cout << "  Suppressed lane; lastServo=" << lastServo << ", leftTarget=" << leftTarget << ", rightTarget=" << rightTarget << endl;
-
-				if ( abs(leftTarget - lastServo) > abs(rightTarget - lastServo) )
-					leftTarget = 0;
-				else
-					rightTarget = 0;
-			}
-			/*
-			// Probably picking up two sides of one lane - decide whether we're to the right or left of it.
-			leftCloserX = leftLaneInfo.xTarget - (m_pLaneTransform->GetLaneSlope(leftLaneInfo.laneId) * closeFactor);
-			rightCloserX = rightLaneInfo.xTarget - (m_pLaneTransform->GetLaneSlope(rightLaneInfo.laneId) * closeFactor);
-
-			if ( ((leftCloserX + rightCloserX) / 2) < closeCutoff )
-			{
-				// Bus is to the right, so left lane is correct - get rid of right lane.
-				rightTarget = 0;
-			}
-			else
-			{
-				// Bus is to the left...
-				leftTarget = 0;
-			}
-
-			if (debugOutput)
-				cout << "  Suppressed lane; leftCloserX=" << leftCloserX << ", rightCloserX=" << rightCloserX << endl;
-		}
-	}
-	*/
 
 	static int servo = ControlMgr::cDefServo;
-	//const int targetDiffThreshold = 10; // If left and right lanes disagree strongly, ignore the one furthest from default (straight) position.
-	//int expectTarget = ControlMgr::cDefServo + ( (leftAngle + rightAngle) / 4 );
-
 	FDRecord & currFDR = m_FDRecords[m_currFDRIndex];
 	currFDR.lastServo = m_lastServo;
 
 	if (leftTarget || rightTarget)
 	{
 		if (leftTarget && rightTarget)
-		{
-			/*
-			if ( abs(leftTarget - rightTarget) > targetDiffThreshold )
-			{
-				if ( abs(leftTarget - expectTarget) > abs(rightTarget - expectTarget) )
-					servo = rightTarget;
-				else
-					servo = leftTarget;
-			}
-			else
-			*/
-
 			servo = (leftTarget + rightTarget) / 2;
-		}
 		else if (leftTarget)
 			servo = leftTarget;
 		else
@@ -832,8 +680,6 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 
 		m_lastServo = servo;
 	}
-	//else
-		//lastServo = 0;
 
 	if (debugOutput)
 	{
@@ -910,12 +756,12 @@ void BusMgr::TrimSearchRange(eLane lane, cv::Vec2i & searchRange) const
 {
 	if (lane == LEFT_LANE)
 	{
-		searchRange[0] = min(searchRange[0], ROI_WIDTH - 1);
-		searchRange[1] = max(searchRange[1], c_defaultRange[LEFT_LANE][1]);
+		searchRange[0] = clamp(searchRange[0], 0, ROI_WIDTH - 1);
+		searchRange[1] = clamp(searchRange[1], c_defaultRange[LEFT_LANE][1], ROI_WIDTH - 1);
 	}
 	else
 	{
-		searchRange[0] = max(searchRange[0], 0);
-		searchRange[1] = min(searchRange[1], c_defaultRange[RIGHT_LANE][1]);
+		searchRange[0] = clamp(searchRange[0], 0, ROI_WIDTH - 1);
+		searchRange[1] = clamp(searchRange[1], 0, c_defaultRange[RIGHT_LANE][1]);
 	}
 }

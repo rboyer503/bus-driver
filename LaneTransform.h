@@ -49,7 +49,6 @@ private:
 	static constexpr int c_numStartAngles = 41;
 	static constexpr int c_numSlopeAdjust = 1;
 	static constexpr int c_laneVariants = (c_numStartAngles * c_numSlopeAdjust);
-	static const cv::Vec2i c_offsetRange[MAX_LANES];
 
 	enum eLaneSearchState
 	{
@@ -79,7 +78,6 @@ public:
 	void RenderLane(cv::Mat & frame, const LaneInfo & laneInfo) const;
 	int GetLaneAngle(const int laneId) const;
 	float GetLaneSlope(const int laneId) const { return m_slopeArray[laneId]; }
-	// int GetSlopeAdjust(int laneId) const;
 };
 
 #endif /* LANETRANSFORM_H_ */

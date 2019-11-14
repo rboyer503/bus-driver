@@ -19,17 +19,17 @@ using namespace cv;
 const std::string LaneTransform::c_indexFileName("index_file.txt");
 const std::string LaneTransform::c_voteArrayFileName("vote_array_file.txt");
 const std::string LaneTransform::c_laneFileName("lane_file.txt");
-const cv::Vec2i LaneTransform::c_offsetRange[MAX_LANES] = { {-35, 141}, {105, -71} }; // { {65, 211}, {145, -1} }; // { {85, 211}, {125, -1} };
 
 
 LaneTransform::LaneTransform()
 {
+	// TODO: Remove weight array?
 	const int divisionSize = c_voteArrayHeight / 3;
 	for (int y = 0; y < divisionSize; ++y)
 	{
 		m_weightArray[y] = 1;
-		m_weightArray[y + divisionSize] = 1; //2;
-		m_weightArray[y + (divisionSize * 2)] = 1; //4;
+		m_weightArray[y + divisionSize] = 1;
+		m_weightArray[y + (divisionSize * 2)] = 1;
 	}
 
 	for (int laneId = 0; laneId < c_laneVariants; ++laneId)
@@ -85,7 +85,7 @@ bool LaneTransform::Load()
 bool LaneTransform::LaneSearch(const vector<Vec2i> & edges, const eLane lane, const cv::Vec2i searchRange, LaneInfo & laneInfo, const bool debug /* = false */) const
 {
 	const int cVoteArrayMedianX = c_voteArrayWidth / 2;
-	const int lsLowThreshold = 10; //20;
+	const int lsLowThreshold = 10;
 	const int maxAngleDeviation = 45;
 
 	bool limitAngleDeviation = laneInfo.isActive();
@@ -165,7 +165,6 @@ bool LaneTransform::LaneSearch(const vector<Vec2i> & edges, const eLane lane, co
 			break;
 	}
 
-	//if (lss == LSS_WAIT_FOR_LOW_THRES)
 	if (tempLaneInfo.votes < lsLowThreshold)
 	{
 		if (debug)
@@ -200,10 +199,3 @@ int LaneTransform::GetLaneAngle(const int laneId) const
 {
 	return ( (laneId / c_numSlopeAdjust) - (c_numStartAngles >> 1) ) * 4;
 }
-
-/*
-int LaneTransform::GetSlopeAdjust(int laneId) const
-{
-	return ( (laneId % c_numSlopeAdjust) - (c_numSlopeAdjust >> 1) );
-}
-*/
