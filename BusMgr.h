@@ -117,6 +117,7 @@ struct FDRecord
 	int servo;
 	int lastServo;
 	int lastAngle;
+	//unsigned char gradientThreshold;
 };
 
 
@@ -129,6 +130,15 @@ class BusMgr
 	static const char * const c_imageProcStageNames[];
 	static const cv::Vec2i c_defaultRange[MAX_LANES];
 	static constexpr int c_maxFDRecords = 150;
+
+	enum eEdgeSearchState
+	{
+		ESS_SEARCH_POS_THRES,
+		ESS_SEARCH_MAX_POS,
+		ESS_SEARCH_NEG_THRES,
+		ESS_SEARCH_MAX_NEG,
+		ESS_MAX
+	};
 
 	eBDErrorCode m_errorCode;
 	eBDImageProcMode m_ipm;
@@ -155,6 +165,7 @@ class BusMgr
 	bool m_FDRFull = false;
 	int m_selectedFDRIndex = 0;
 	bool m_updateFDR = true;
+	bool m_renderLanes = true;
 
 public:
 	BusMgr();
@@ -174,6 +185,7 @@ public:
 	void UpdatePage();
 	void UpdateParam(int param, bool up);
 	void DebugCommand();
+	void ToggleRenderLanes() { m_renderLanes = !m_renderLanes; }
 
 	void SetSpeed(int speed) { m_pCtrlMgr->SetSpeed(speed); }
 	void SetAcceleration(float accel)

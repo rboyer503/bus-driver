@@ -152,6 +152,10 @@ int main(void)
 			{
 				busMgr.NextFDR();
 			}
+			else if (c == 'l')
+			{
+				busMgr.ToggleRenderLanes();
+			}
 		}
 
 		busMgr.ApplyAcceleration();
