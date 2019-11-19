@@ -105,7 +105,7 @@ struct Config
 	unsigned char kernelSize;
 	unsigned char gradientThreshold;
 	Config() :
-		kernelSize(5), gradientThreshold(20)
+		kernelSize(5), gradientThreshold(40)
 	{}
 };
 
@@ -153,6 +153,11 @@ class BusMgr
 	boost::posix_time::time_duration m_diff;
 	ControlMgr * m_pCtrlMgr;
 	LaneTransform * m_pLaneTransform;
+	cv::Mat m_frameResize;
+	cv::Mat m_frameGray;
+	cv::Mat m_frameROI;
+	cv::Mat m_frameFilter;
+	cv::Mat m_frameDouble;
 	LaneInfo m_lockedLanes[MAX_LANES];
 	cv::Vec2i m_searchRange[MAX_LANES];
 	int m_lastServo;

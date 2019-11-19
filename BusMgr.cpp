@@ -42,6 +42,10 @@ T clamp(const T& val, const T& lower, const T& upper)
 }
 
 
+Mat m_frameGradient(ROI_HEIGHT, ROI_WIDTH, CV_32SC1, Scalar(0));
+Mat m_frameGradientVert(ROI_HEIGHT, ROI_WIDTH, CV_32SC1, Scalar(0));
+
+
 const char * const BusMgr::c_imageProcModeNames[] = {"None", "Gray", "Blur", "Lane Assist", "FDR"};
 const char * const BusMgr::c_imageProcStageNames[] = {"Gray", "Blur", "Lane Assist", "Send", "Total"};
 const cv::Vec2i BusMgr::c_defaultRange[MAX_LANES] = { {ROI_WIDTH / 2, -26}, {ROI_WIDTH / 2, ROI_WIDTH + 26} };
@@ -57,6 +61,8 @@ BusMgr::BusMgr() :
 
 	for (int i = 0; i < MAX_LANES; ++i)
 		m_searchRange[i] = c_defaultRange[i];
+
+	m_frameDouble = Mat(ROI_HEIGHT, ROI_WIDTH, CV_32SC1);
 }
 
 BusMgr::~BusMgr()
@@ -346,10 +352,7 @@ bool BusMgr::ProcessFrame(Mat & frame)
 	PROFILE_START;
 
 	Mat * pFrameDisplay = NULL;
-	Mat frameResize;
-	Mat frameGray;
-	Mat frameROI;
-	Mat frameFilter;
+
 	eBDImageProcMode ipm = m_ipm;
 	int processUs[IPS_MAX];
 	memset(processUs, 0, sizeof(processUs));
@@ -366,29 +369,29 @@ bool BusMgr::ProcessFrame(Mat & frame)
 	else
 	{
 		// Convert to grayscale image, flip, and focus to ROI.
-		resize(frame, frameResize, Size(), 0.5, 0.5, INTER_NEAREST);
-		cvtColor(frameResize, frameGray, CV_BGR2GRAY);
-		flip(frameGray, frameGray, -1);
-		frameROI = frameGray(Rect(0, 72, ROI_WIDTH, ROI_HEIGHT));
+		resize(frame, m_frameResize, Size(), 0.5, 0.5, INTER_NEAREST);
+		cvtColor(m_frameResize, m_frameGray, CV_BGR2GRAY);
+		flip(m_frameGray, m_frameGray, -1);
+		m_frameROI = m_frameGray(Rect(0, 72, ROI_WIDTH, ROI_HEIGHT));
 
 		processUs[IPS_GRAY] = PROFILE_DIFF;
 		PROFILE_START;
 
 		if (ipm == IPM_GRAY)
 		{
-			pFrameDisplay = &frameROI;
+			pFrameDisplay = &m_frameROI;
 		}
 		else
 		{
 			// Apply gaussian blur.
-			GaussianBlur(frameROI, frameFilter, Size(m_config.kernelSize, m_config.kernelSize), 0, 0);
+			GaussianBlur(m_frameROI, m_frameFilter, Size(m_config.kernelSize, m_config.kernelSize), 0, 0);
 
 			processUs[IPS_BLUR] = PROFILE_DIFF;
 			PROFILE_START;
 
 			if (ipm == IPM_BLUR)
 			{
-				pFrameDisplay = &frameFilter;
+				pFrameDisplay = &m_frameFilter;
 			}
 			else
 			{
@@ -409,7 +412,7 @@ bool BusMgr::ProcessFrame(Mat & frame)
 					laneAssistActive = false;
 
 				// Run lane assist algorithm to calculate servo position.
-				servo = LaneAssistComputeServo(frameFilter);
+				servo = LaneAssistComputeServo(m_frameFilter);
 
 				if (m_pCtrlMgr->GetLaneAssist())
 				{
@@ -419,7 +422,7 @@ bool BusMgr::ProcessFrame(Mat & frame)
 				processUs[IPS_LANEASSIST] = PROFILE_DIFF;
 				PROFILE_START;
 
-				pFrameDisplay = &frameFilter;
+				pFrameDisplay = &m_frameFilter;
 			}
 		}
 	}
@@ -476,27 +479,71 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 		cout << endl << "Debug output" << endl;
 	}
 
+	// Calculate gradient maps, kernel = {-2, -1, 0, 1, 2}.
+	// -- First precalculate frame * 2.
+	frame.convertTo(m_frameDouble, CV_32SC1, 2);
+
+	// -- Mark left and right X position for sweeping kernel for linear filter.
+	const int linearFilterSize = 5;
+	const int xLeft = 0;
+	const int xRight = frame.cols - linearFilterSize;
+
+	// -- Calculate horizontal gradients.
+	uchar * pRow;
+	int * pRowDouble;
+	int * pRowGradient;
+	for (int y = 0; y < m_frameGradient.rows; ++y)
+	{
+		pRow = frame.ptr(y);
+		pRowDouble = m_frameDouble.ptr<int>(y);
+		pRowGradient = m_frameGradient.ptr<int>(y);
+
+		for (int x = xLeft; x <= xRight; ++x)
+		{
+			pRowGradient[x + 2] = -pRowDouble[x] -
+								   pRow[x + 1] +
+								   pRow[x + 3] +
+								   pRowDouble[x + 4];
+		}
+	}
+
+	// -- Mark top and bottom y position for sweeping kernel for vertical linear filter.
+	const int yTop = 10; // Ignore top 1/3 of image.
+	int yBottom = frame.rows - linearFilterSize;
+
+	// -- Calculate vertical gradients.
+	uchar * pRow2;
+	int * pRowDouble2;
+	for (int y = yTop; y <= yBottom; ++y)
+	{
+		pRowDouble = m_frameDouble.ptr<int>(y);
+		pRow = frame.ptr(y + 1);
+		pRow2 = frame.ptr(y + 3);
+		pRowDouble2 = m_frameDouble.ptr<int>(y + 4);
+		pRowGradient = m_frameGradientVert.ptr<int>(y + 2);
+
+		for (int x = 0; x < m_frameGradientVert.cols; ++x)
+		{
+			pRowGradient[x] = pRowDouble[x] +
+							  pRow[x] -
+							  pRow2[x] -
+							  pRowDouble2[x];
+		}
+	}
+
 	// Perform edge detection using simple linear filters.
 	// Lane markings are characterized by a positive gradient quickly followed by a negative gradient.
-	const int filter[] = {2, 1, 0, -1, -2}; // Not directly used due to optimizations.
-	//const int onLaneCountdownInit = 30; // Once positive gradient found, search for corresponding negative gradient for this many steps.
-	const int stateDuration[ESS_MAX] = {30, 40, 30, 40};
+	const int stateDuration[ESS_MAX] = {0, 40, 30, 10};
 
 	// Actual edge coordinates; separate bins for left and right lanes.
 	// Reserve enough for room to avoid ever needing to resize.
 	vector<Vec3i> edges[MAX_LANES];
-	//vector<Vec3i> edges[RIGHT_LANE];
 	edges[LEFT_LANE].reserve(450); // TODO: Tune this.
 	edges[RIGHT_LANE].reserve(450);
 
-	int laneWidthMap[MAX_LANES][ROI_WIDTH][ROI_HEIGHT] = {0};
+	uchar laneWidthMap[MAX_LANES][ROI_WIDTH][ROI_HEIGHT] = {0};
 
-	// Mark left and right X position for sweeping kernel for linear filter.
-	int xLeft = 0;
-	int xRight = frame.cols - (sizeof(filter) / sizeof(filter[0]));
-
-	// Edge detection implementation.
-	uchar * pRow;
+	// FSM-based lane marking detection implementation.
 	int gradient;
 	eEdgeSearchState ess;
 	int stateCountdown;
@@ -504,23 +551,20 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	int maxGradient;
 	bool laneFound;
 
-	for (int y = 0; y < frame.rows - 1; ++y)
+	for (int y = 0; y < frame.rows; ++y)
 	{
-		pRow = frame.ptr(y);
+		pRowGradient = m_frameGradient.ptr<int>(y);
 		ess = ESS_SEARCH_POS_THRES;
 		laneFound = false;
 
 		for (int x = xLeft; x <= xRight; ++x)
 		{
-			gradient = (pRow[x] << 1) +
-					   (pRow[x + 1]) -
-					   (pRow[x + 3]) -
-					   (pRow[x + 4] << 1);
+			gradient = pRowGradient[x + 2];
 
 			switch (ess)
 			{
 			case ESS_SEARCH_POS_THRES:
-				if (-gradient >= m_config.gradientThreshold)
+				if (gradient >= m_config.gradientThreshold)
 				{
 					// Minimal positive gradient threshold crossed.
 					ess = ESS_SEARCH_MAX_POS;
@@ -531,16 +575,25 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 				break;
 
 			case ESS_SEARCH_MAX_POS:
-				if (-gradient >= maxGradient)
+				if (gradient >= maxGradient)
 				{
 					// Found larger positive gradient.
 					laneStart = x;
 					maxGradient = gradient;
 				}
 
-				if ( (--stateCountdown == 0) || (gradient >= m_config.gradientThreshold) )
+				if (-gradient >= m_config.gradientThreshold)
 				{
-					// State expired or negative gradient threshold found.
+					// Negative gradient threshold found.
+					ess = ESS_SEARCH_MAX_NEG;
+					stateCountdown = min(stateDuration[ess], (xRight - x));
+					laneEnd = x;
+					maxGradient = -gradient;
+					laneFound = true;
+				}
+				else if (--stateCountdown == 0)
+				{
+					// State expired.
 					ess = ESS_SEARCH_NEG_THRES;
 					stateCountdown = stateDuration[ess];
 					x = laneStart;
@@ -548,13 +601,13 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 				break;
 
 			case ESS_SEARCH_NEG_THRES:
-				if (gradient >= m_config.gradientThreshold)
+				if (-gradient >= m_config.gradientThreshold)
 				{
 					// Minimal negative gradient threshold crossed.
 					ess = ESS_SEARCH_MAX_NEG;
 					stateCountdown = min(stateDuration[ess], (xRight - x));
 					laneEnd = x;
-					maxGradient = gradient;
+					maxGradient = -gradient;
 					laneFound = true;
 				}
 				else if (--stateCountdown == 0)
@@ -565,21 +618,18 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 				break;
 
 			case ESS_SEARCH_MAX_NEG:
-				if (gradient >= maxGradient)
+				if (-gradient >= maxGradient)
 				{
 					// Found larger negative gradient.
 					laneEnd = x;
-					maxGradient = gradient;
+					maxGradient = -gradient;
 				}
 
-				if ( (--stateCountdown == 0) || (-gradient >= m_config.gradientThreshold) )
+				if ( (--stateCountdown == 0) || (gradient >= m_config.gradientThreshold) )
 				{
 					// State expired or positive gradient threshold found.
 					ess = ESS_SEARCH_POS_THRES;
-					//edges[LEFT_LANE].push_back(Vec3i(laneEnd + 2, y, 0));
-					//edges[RIGHT_LANE].push_back(Vec3i(laneStart + 2, y, 0));
-					laneWidthMap[LEFT_LANE][laneEnd + 2][y] = (laneEnd - laneStart);
-					laneWidthMap[RIGHT_LANE][laneStart + 2][y] = (laneEnd - laneStart);
+					laneWidthMap[LEFT_LANE][laneEnd + 2][y] = laneWidthMap[RIGHT_LANE][laneStart + 2][y] = static_cast<uchar>(laneEnd - laneStart);
 					laneFound = false;
 				}
 				break;
@@ -588,178 +638,161 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 
 		if (laneFound)
 		{
-			//edges[LEFT_LANE].push_back(Vec3i(laneEnd + 2, y, 0));
-			//edges[RIGHT_LANE].push_back(Vec3i(laneStart + 2, y, 0));
-			laneWidthMap[LEFT_LANE][laneEnd + 2][y] = (laneEnd - laneStart);
-			laneWidthMap[RIGHT_LANE][laneStart + 2][y] = (laneEnd - laneStart);
+			laneWidthMap[LEFT_LANE][laneEnd + 2][y] = laneWidthMap[RIGHT_LANE][laneStart + 2][y] = static_cast<uchar>(laneEnd - laneStart);
 			laneFound = false;
 		}
 	}
 
-	// Mark top and bottom y position for sweeping kernel for vertical linear filter.
-	const int yTop = 10; // Ignore top 1/3 of image.
-	int yBottom = frame.rows - (sizeof(filter) / sizeof(filter[0]));
-
-	// Edge detection (vertical gradients).
+	// FSM-based lane marking detection implementation for vertical gradients.
 	const int angleThreshold = 30;
 	static int lastAngle = 0;
-	//if (abs(lastAngle) >= angleThreshold)
+	for (int x = 0; x < frame.cols; ++x)
 	{
-		for (int x = 0; x < frame.cols - 1; ++x)
+		ess = ESS_SEARCH_POS_THRES;
+		laneFound = false;
+
+		for (int y = yBottom; y >= yTop; --y)
 		{
-			ess = ESS_SEARCH_NEG_THRES;
+			gradient = m_frameGradientVert.at<int>((y + 2), x);
+
+			switch (ess)
+			{
+			case ESS_SEARCH_POS_THRES:
+				if (gradient >= m_config.gradientThreshold)
+				{
+					// Minimal positive gradient threshold crossed.
+					ess = ESS_SEARCH_MAX_POS;
+					stateCountdown = min(stateDuration[ess], (y - yTop));
+					laneStart = y;
+					maxGradient = gradient;
+				}
+				break;
+
+			case ESS_SEARCH_MAX_POS:
+				if (gradient >= maxGradient)
+				{
+					// Found larger positive gradient.
+					laneStart = y;
+					maxGradient = gradient;
+				}
+
+				if (-gradient >= m_config.gradientThreshold)
+				{
+					// Negative gradient threshold found.
+					ess = ESS_SEARCH_MAX_NEG;
+					stateCountdown = min(stateDuration[ess], (y - yTop));
+					laneEnd = y;
+					maxGradient = -gradient;
+					laneFound = true;
+				}
+				else if (--stateCountdown == 0)
+				{
+					// State expired.
+					ess = ESS_SEARCH_NEG_THRES;
+					stateCountdown = stateDuration[ess];
+					y = laneStart;
+				}
+				break;
+
+			case ESS_SEARCH_NEG_THRES:
+				if (-gradient >= m_config.gradientThreshold)
+				{
+					// Minimal negative gradient threshold crossed.
+					ess = ESS_SEARCH_MAX_NEG;
+					stateCountdown = min(stateDuration[ess], (y - yTop));
+					laneEnd = y;
+					maxGradient = -gradient;
+					laneFound = true;
+				}
+				else if (--stateCountdown == 0)
+				{
+					// No negative gradient found.
+					ess = ESS_SEARCH_POS_THRES;
+				}
+				break;
+
+			case ESS_SEARCH_MAX_NEG:
+				if (-gradient >= maxGradient)
+				{
+					// Found larger negative gradient.
+					laneEnd = y;
+					maxGradient = -gradient;
+				}
+
+				if ( (--stateCountdown == 0) || (gradient >= m_config.gradientThreshold) )
+				{
+					// State expired or positive gradient threshold found.
+					ess = ESS_SEARCH_POS_THRES;
+
+					// Pos -> neg gradient found - track edge in either left, right, or both lane bins.
+					// Lane selection is based on previous frame's angle.
+					if (lastAngle > angleThreshold)
+						laneWidthMap[LEFT_LANE][x][laneStart + 2] = static_cast<uchar>(laneStart - laneEnd);
+					else if (lastAngle < -angleThreshold)
+						laneWidthMap[RIGHT_LANE][x][laneStart + 2] = static_cast<uchar>(laneStart - laneEnd);
+					else
+						laneWidthMap[LEFT_LANE][x][laneStart + 2] = laneWidthMap[RIGHT_LANE][x][laneStart + 2] = static_cast<uchar>(laneStart - laneEnd);
+
+					laneFound = false;
+				}
+				break;
+			}
+		}
+
+		if (laneFound)
+		{
+			// Pos -> neg gradient found - track edge in left, right, or both lane bins.
+			// Lane selection is based on previous frame's angle.
+			if (lastAngle > angleThreshold)
+				laneWidthMap[LEFT_LANE][x][laneStart + 2] = static_cast<uchar>(laneStart - laneEnd);
+			else if (lastAngle < -angleThreshold)
+				laneWidthMap[RIGHT_LANE][x][laneStart + 2] = static_cast<uchar>(laneStart - laneEnd);
+			else
+				laneWidthMap[LEFT_LANE][x][laneStart + 2] = laneWidthMap[RIGHT_LANE][x][laneStart + 2] = static_cast<uchar>(laneStart - laneEnd);
+
 			laneFound = false;
-
-			for (int y = yBottom; y >= yTop; --y)
-			{
-				// Searching for negative gradient (swapped for vertical edge detection).
-				gradient = (frame.data[ (y * frame.step) + x ] << 1) +
-						   (frame.data[ ((y + 1) * frame.step) + x ]) -
-						   (frame.data[ ((y + 3) * frame.step) + x ]) -
-						   (frame.data[ ((y + 4) * frame.step) + x ] << 1);
-
-				switch (ess)
-				{
-				case ESS_SEARCH_NEG_THRES:
-					if (gradient >= m_config.gradientThreshold)
-					{
-						// Minimal negative gradient threshold crossed.
-						ess = ESS_SEARCH_MAX_NEG;
-						stateCountdown = min(stateDuration[ess], (y - yTop));
-						laneStart = y;
-						maxGradient = gradient;
-					}
-					break;
-
-				case ESS_SEARCH_MAX_NEG:
-					if (gradient >= maxGradient)
-					{
-						// Found larger negative gradient.
-						laneStart = y;
-						maxGradient = gradient;
-					}
-
-					if ( (--stateCountdown == 0) || (-gradient >= m_config.gradientThreshold) )
-					{
-						// State expired or positive gradient threshold found.
-						ess = ESS_SEARCH_POS_THRES;
-						stateCountdown = stateDuration[ess];
-						y = laneStart;
-					}
-					break;
-
-				case ESS_SEARCH_POS_THRES:
-					if (-gradient >= m_config.gradientThreshold)
-					{
-						// Minimal positive gradient threshold crossed.
-						ess = ESS_SEARCH_MAX_POS;
-						stateCountdown = min(stateDuration[ess], (y - yTop));
-						laneEnd = y;
-						maxGradient = gradient;
-						laneFound = true;
-					}
-					else if (--stateCountdown == 0)
-					{
-						// No positive gradient found.
-						ess = ESS_SEARCH_NEG_THRES;
-					}
-					break;
-
-				case ESS_SEARCH_MAX_POS:
-					if (-gradient >= maxGradient)
-					{
-						// Found larger positive gradient.
-						laneEnd = y;
-						maxGradient = gradient;
-					}
-
-					if ( (--stateCountdown == 0) || (gradient >= m_config.gradientThreshold) )
-					{
-						// State expired or negative gradient threshold found.
-						ess = ESS_SEARCH_NEG_THRES;
-
-						// Neg -> pos gradient found - track edge in either left or right lane bins.
-						// Lane selection is based on previous frame's angle.
-						/*
-						if (lastAngle > 0)
-							edges[LEFT_LANE].push_back(Vec3i(x, laneStart + 2, 0));
-						else
-							edges[RIGHT_LANE].push_back(Vec3i(x, laneStart + 2, 0));
-						*/
-
-						if (lastAngle > angleThreshold)
-							laneWidthMap[LEFT_LANE][x][laneStart + 2] = (laneStart - laneEnd);
-						else if (lastAngle < -angleThreshold)
-							laneWidthMap[RIGHT_LANE][x][laneStart + 2] = (laneStart - laneEnd);
-						else
-						{
-							laneWidthMap[LEFT_LANE][x][laneStart + 2] = (laneStart - laneEnd);
-							laneWidthMap[RIGHT_LANE][x][laneStart + 2] = (laneStart - laneEnd);
-						}
-
-						laneFound = false;
-					}
-					break;
-				}
-			}
-
-			if (laneFound)
-			{
-				// Neg -> pos gradient found - track edge in either left or right lane bins.
-				// Lane selection is based on previous frame's angle.
-				/*
-				if (lastAngle > 0)
-					edges[LEFT_LANE].push_back(Vec3i(x, laneStart + 2, 0));
-				else
-					edges[RIGHT_LANE].push_back(Vec3i(x, laneStart + 2, 0));
-				*/
-
-				if (lastAngle > angleThreshold)
-					laneWidthMap[LEFT_LANE][x][laneStart + 2] = (laneStart - laneEnd);
-				else if (lastAngle < -angleThreshold)
-					laneWidthMap[RIGHT_LANE][x][laneStart + 2] = (laneStart - laneEnd);
-				else
-				{
-					laneWidthMap[LEFT_LANE][x][laneStart + 2] = (laneStart - laneEnd);
-					laneWidthMap[RIGHT_LANE][x][laneStart + 2] = (laneStart - laneEnd);
-				}
-
-				laneFound = false;
-			}
 		}
 	}
 
 	// Post-processing to establish "coherency factor" for edges.
 	// Edge coherency refers to the existence of neighboring edges with similar lane widths.
 	// Actual lane markings should typically have high coherency, whereas noise resulting from (e.g.) glare should have low coherency.
-	const int laneWidthDiffThreshold = 2;
-	int currLaneWidth;
+	const uchar laneWidthDiffThreshold = 2;
+	uchar currLaneWidth;
 	int coherency;
-	for (int x = 1; x < ROI_WIDTH - 1; ++x)
+	for (int lane = LEFT_LANE; lane < MAX_LANES; ++lane)
 	{
-		for (int y = 1; y < ROI_HEIGHT - 1; ++y)
+		for (int x = 1; x < ROI_WIDTH - 1; ++x)
 		{
-			for (int lane = LEFT_LANE; lane < MAX_LANES; ++lane)
+			for (int y = 1; y < ROI_HEIGHT - 1; ++y)
 			{
 				if ( (currLaneWidth = laneWidthMap[lane][x][y]) != 0 )
 				{
 					coherency = 0;
-					if (abs(laneWidthMap[lane][x-1][y-1] - currLaneWidth) < laneWidthDiffThreshold)
-						++coherency;
-					if (abs(laneWidthMap[lane][x][y-1] - currLaneWidth) < laneWidthDiffThreshold)
-						++coherency;
-					if (abs(laneWidthMap[lane][x+1][y-1] - currLaneWidth) < laneWidthDiffThreshold)
-						++coherency;
-					if (abs(laneWidthMap[lane][x-1][y] - currLaneWidth) < laneWidthDiffThreshold)
-						++coherency;
-					if (abs(laneWidthMap[lane][x+1][y] - currLaneWidth) < laneWidthDiffThreshold)
-						++coherency;
-					if (abs(laneWidthMap[lane][x-1][y+1] - currLaneWidth) < laneWidthDiffThreshold)
-						++coherency;
-					if (abs(laneWidthMap[lane][x][y+1] - currLaneWidth) < laneWidthDiffThreshold)
-						++coherency;
-					if (abs(laneWidthMap[lane][x+1][y+1] - currLaneWidth) < laneWidthDiffThreshold)
-						++coherency;
+					if (laneWidthMap[lane][x-1][y-1])
+						if (abs(laneWidthMap[lane][x-1][y-1] - currLaneWidth) < laneWidthDiffThreshold)
+							++coherency;
+					if (laneWidthMap[lane][x][y-1])
+						if (abs(laneWidthMap[lane][x][y-1] - currLaneWidth) < laneWidthDiffThreshold)
+							++coherency;
+					if (laneWidthMap[lane][x+1][y-1])
+						if (abs(laneWidthMap[lane][x+1][y-1] - currLaneWidth) < laneWidthDiffThreshold)
+							++coherency;
+					if (laneWidthMap[lane][x-1][y])
+						if (abs(laneWidthMap[lane][x-1][y] - currLaneWidth) < laneWidthDiffThreshold)
+							++coherency;
+					if (laneWidthMap[lane][x+1][y])
+						if (abs(laneWidthMap[lane][x+1][y] - currLaneWidth) < laneWidthDiffThreshold)
+							++coherency;
+					if (laneWidthMap[lane][x-1][y+1])
+						if (abs(laneWidthMap[lane][x-1][y+1] - currLaneWidth) < laneWidthDiffThreshold)
+							++coherency;
+					if (laneWidthMap[lane][x][y+1])
+						if (abs(laneWidthMap[lane][x][y+1] - currLaneWidth) < laneWidthDiffThreshold)
+							++coherency;
+					if (laneWidthMap[lane][x+1][y+1])
+						if (abs(laneWidthMap[lane][x+1][y+1] - currLaneWidth) < laneWidthDiffThreshold)
+							++coherency;
 
 					edges[lane].push_back(Vec3i(x, y, coherency));
 				}
@@ -857,7 +890,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 		cout << "  Target: " << leftTarget << ", " << rightTarget << "; Servo: " << servo << endl;
 	}
 
-	currFDR.frame = frame;
+	currFDR.frame = frame.clone();
 	currFDR.target[LEFT_LANE] = leftTarget;
 	currFDR.target[RIGHT_LANE] = rightTarget;
 	currFDR.searchStart[LEFT_LANE] = m_searchRange[LEFT_LANE][0];
@@ -909,7 +942,7 @@ void BusMgr::DisplayCurrentParamPage()
 
 int BusMgr::TranslateXTargetToServo(eLane lane, int xTarget) const
 {
-	const int centerX[MAX_LANES] = { 40, 140 };
+	const int centerX[MAX_LANES] = { 30, 141 };
 
 	// TODO: Try making servo factor adaptive (inverse relationship with speed).
 	const float offsetToServoFactor = 2.0f; // 3.0f;
