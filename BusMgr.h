@@ -165,12 +165,14 @@ class BusMgr
 	boost::mutex m_accelMutex;
 	float m_acceleration;
 	float m_speed;
+	int m_maxSpeed;
 	FDRecord m_FDRecords[c_maxFDRecords];
 	int m_currFDRIndex = 0;
 	bool m_FDRFull = false;
 	int m_selectedFDRIndex = 0;
 	bool m_updateFDR = true;
 	bool m_renderLanes = true;
+	boost::mutex m_laneStateMutex;
 
 public:
 	BusMgr();

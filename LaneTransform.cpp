@@ -87,6 +87,7 @@ bool LaneTransform::LaneSearch(const vector<Vec3i> & edges, const eLane lane, co
 	const int cVoteArrayMedianX = c_voteArrayWidth / 2;
 	const int lsLowThreshold = 20; // 10;
 	const int maxAngleDeviation = 45;
+	const int angleLimit = 60;
 
 	bool limitAngleDeviation = laneInfo.isActive();
 
@@ -138,13 +139,18 @@ bool LaneTransform::LaneSearch(const vector<Vec3i> & edges, const eLane lane, co
 		if (currMaxVotes > tempLaneInfo.votes)
 		{
 			int tempAngle = GetLaneAngle(currBestLaneId);
-			if ( !limitAngleDeviation ||
-				 ( abs(tempAngle - laneInfo.angle) <= maxAngleDeviation ) )
+
+			if ( ( (lane == LEFT_LANE) && (tempAngle >= -angleLimit) ) ||
+				 ( (lane == RIGHT_LANE) && (tempAngle <= angleLimit) ) )
 			{
-				tempLaneInfo.votes = currMaxVotes;
-				tempLaneInfo.laneId = currBestLaneId;
-				tempLaneInfo.xTarget = cVoteArrayMedianX - offset;
-				tempLaneInfo.angle = tempAngle;
+				if ( !limitAngleDeviation ||
+					 ( abs(tempAngle - laneInfo.angle) <= maxAngleDeviation ) )
+				{
+					tempLaneInfo.votes = currMaxVotes;
+					tempLaneInfo.laneId = currBestLaneId;
+					tempLaneInfo.xTarget = cVoteArrayMedianX - offset;
+					tempLaneInfo.angle = tempAngle;
+				}
 			}
 		}
 
