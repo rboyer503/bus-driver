@@ -531,7 +531,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	}
 
 	// -- Mark top and bottom y position for sweeping kernel for vertical linear filter.
-	const int yTop = 10; // Ignore top 1/3 of image.
+	const int yTop = 0; // Ignore top 1/3 of image.
 	int yBottom = frame.rows - linearFilterSize;
 
 	// -- Calculate vertical gradients.

@@ -85,29 +85,42 @@ bool LaneTransform::Load()
 bool LaneTransform::LaneSearch(const vector<Vec3i> & edges, const eLane lane, const cv::Vec2i searchRange, LaneInfo & laneInfo, const bool debug /* = false */) const
 {
 	const int cVoteArrayMedianX = c_voteArrayWidth / 2;
-	const int lsLowThreshold = 20; // 10;
 	const int maxAngleDeviation = 45;
 	const int angleLimit = 60;
+	int lsLowThreshold = 20;
+	bool limitAngleDeviation = false;
 
-	bool limitAngleDeviation = laneInfo.isActive();
+	if (laneInfo.isActive())
+	{
+		limitAngleDeviation = true;
+		lsLowThreshold = 10;
+	}
 
 	LaneInfo tempLaneInfo;
-	int step = (lane == LEFT_LANE ? 1 : -1);
+	//int step = (lane == LEFT_LANE ? 1 : -1);
 	eLaneSearchState lss = LSS_WAIT_FOR_LOW_THRES;
-	bool lsDone = false;
+	bool done[2] = {false, false};
 
-	for (int offset = (cVoteArrayMedianX - searchRange[0]); offset != (cVoteArrayMedianX - searchRange[1]); offset += step)
+	//for (int offset = (cVoteArrayMedianX - searchRange[0]); offset != (cVoteArrayMedianX - searchRange[1]); offset += step)
+	int offset = (searchRange[0] + searchRange[1]) / 2;
+	int range = abs(searchRange[0] - searchRange[1]);
+	int jump = 1;
+	int jumpDir = 1;
+	int voteArrayOffset;
+	for (int i = 0; i < range; i++)
 	{
+		voteArrayOffset = cVoteArrayMedianX - offset;
+
 		short laneVoteTable[c_laneVariants + 1] = {};
 		const short * pVote;
 		int currMaxVotes = 0;
 		int currBestLaneId = 0;
-		bool done = false;
+		//bool done = false;
 
 		for (const Vec3i & edge : edges)
 		{
 			int index;
-			int x = edge[0] + offset - 1;
+			int x = edge[0] + voteArrayOffset - 1;
 			if ( (x < 0) || ((x + 2) >= c_voteArrayWidth) )
 				continue;
 
@@ -133,7 +146,7 @@ bool LaneTransform::LaneSearch(const vector<Vec3i> & edges, const eLane lane, co
 		}
 
 		if (debug)
-			cout << "    Debug xTarget=" << (cVoteArrayMedianX - offset) << ", maxVotes=" << currMaxVotes << ", bestLaneId=" << currBestLaneId <<
+			cout << "    Debug xTarget=" << (cVoteArrayMedianX - voteArrayOffset) << ", maxVotes=" << currMaxVotes << ", bestLaneId=" << currBestLaneId <<
 					", angle=" << GetLaneAngle(currBestLaneId) << endl;
 
 		if (currMaxVotes > tempLaneInfo.votes)
@@ -148,7 +161,7 @@ bool LaneTransform::LaneSearch(const vector<Vec3i> & edges, const eLane lane, co
 				{
 					tempLaneInfo.votes = currMaxVotes;
 					tempLaneInfo.laneId = currBestLaneId;
-					tempLaneInfo.xTarget = cVoteArrayMedianX - offset;
+					tempLaneInfo.xTarget = cVoteArrayMedianX - voteArrayOffset;
 					tempLaneInfo.angle = tempAngle;
 				}
 			}
@@ -163,12 +176,22 @@ bool LaneTransform::LaneSearch(const vector<Vec3i> & edges, const eLane lane, co
 
 		case LSS_WAIT_FOR_DECAY:
 			if ( currMaxVotes <= ((tempLaneInfo.votes << 1) / 3) )
-				done = true;
+			{
+				if (done[0])
+					done[1] = true;
+				else
+					done[0] = true;
+			}
+			else
+				done[0] = false;
 			break;
 		}
 
-		if (done)
+		if (done[1])
 			break;
+
+		offset += (jump++ * jumpDir);
+		jumpDir *= -1;
 	}
 
 	if (tempLaneInfo.votes < lsLowThreshold)
