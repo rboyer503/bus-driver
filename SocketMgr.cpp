@@ -213,10 +213,13 @@ void SocketMgr::ReadCommandsWorker()
 		}
 		else if (strncmp(recvBuffer, "motor ", 6) == 0)
 		{
-			int value = atoi(&recvBuffer[6]);
+			if (!m_owner->GetAutoPilot())
+			{
+				int value = atoi(&recvBuffer[6]);
 
-			// Joystick sends value from -32768 to 32767 - scale to 10.0 to -10.0 for acceleration value.
-			m_owner->SetAcceleration(-value / 3276.8f);
+				// Joystick sends value from -32768 to 32767 - scale to 10.0 to -10.0 for acceleration value.
+				m_owner->SetAcceleration(-value / 3276.8f);
+			}
 		}
 		else if (strcmp(recvBuffer, "laneassist on") == 0)
 		{
@@ -225,6 +228,14 @@ void SocketMgr::ReadCommandsWorker()
 		else if (strcmp(recvBuffer, "laneassist off") == 0)
 		{
 			m_owner->SetLaneAssist(false);
+		}
+		else if (strcmp(recvBuffer, "autopilot on") == 0)
+		{
+			m_owner->SetAutoPilot(true);
+		}
+		else if (strcmp(recvBuffer, "autopilot off") == 0)
+		{
+			m_owner->SetAutoPilot(false);
 		}
 		else if (strcmp(recvBuffer, "shiftleft") == 0)
 		{

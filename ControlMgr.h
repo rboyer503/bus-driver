@@ -35,6 +35,7 @@ class ControlMgr {
 	bool m_reverse;
 	int m_servo;
 	bool m_laneAssist;
+	bool m_autoPilot;
 	bool m_update;
 
 public:
@@ -84,6 +85,16 @@ public:
 	}
 
 	bool GetLaneAssist() const { return m_laneAssist; }
+
+	void SetAutoPilot(bool enable)
+	{
+		std::cout << "DEBUG: SetAutoPilot(" << enable << ")" << std::endl;
+		m_autoPilot = enable;
+		if (enable)
+			m_laneAssist = true;
+	}
+
+	bool GetAutoPilot() const { return m_autoPilot; }
 
 private:
 	void WorkerFunc();

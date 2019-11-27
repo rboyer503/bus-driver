@@ -85,7 +85,7 @@ bool LaneTransform::Load()
 bool LaneTransform::LaneSearch(const vector<Vec3i> & edges, const eLane lane, const cv::Vec2i searchRange, LaneInfo & laneInfo, const bool debug /* = false */) const
 {
 	const int cVoteArrayMedianX = c_voteArrayWidth / 2;
-	const int maxAngleDeviation = 45;
+	const int maxAngleDeviation = 30;
 	const int angleLimit = 60;
 	int lsLowThreshold = 20;
 	bool limitAngleDeviation = false;

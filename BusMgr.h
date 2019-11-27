@@ -205,6 +205,8 @@ public:
 	void SetServo(int servo) { m_pCtrlMgr->SetServo(servo); }
 	void SetLaneAssist(bool enable) { m_pCtrlMgr->SetLaneAssist(enable); }
 	bool GetLaneAssist() const { return m_pCtrlMgr->GetLaneAssist(); }
+	void SetAutoPilot(bool enable) { m_pCtrlMgr->SetAutoPilot(enable); }
+	bool GetAutoPilot() const { return m_pCtrlMgr->GetAutoPilot(); }
 	void SwitchLane(eLane toLane);
 
 	void PrevFDR()
