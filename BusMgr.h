@@ -9,20 +9,17 @@
 #define BUSMGR_H_
 
 #include <algorithm>
+#include <limits>
 #include <numeric>
 #include <opencv2/opencv.hpp>
 #include <boost/thread.hpp>
 #include <boost/thread/mutex.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
+
 #include "ControlMgr.h"
 #include "LaneTransform.h"
-#include "Constants.h"
-
-#define FRAME_SKIP 1
-#define FRAME_BACKLOG_MIN -5
 
 #define STATUS_SUPPRESS_DELAY 10
-#define STATUS_HISTORY_BUCKETS 10
 
 
 enum eBDErrorCode
@@ -31,10 +28,8 @@ enum eBDErrorCode
 	EC_LANETRANSFAIL,
 	EC_LISTENFAIL,
 	EC_ACCEPTFAIL,
-	EC_READCMDFAIL,
 	EC_CAPTUREOPENFAIL,
 	EC_CAPTUREGRABFAIL,
-	EC_SERIALIZEFAIL,
 	EC_SENDFAIL,
 	EC_RELEASEFAIL,
 	EC_INTERRUPT
@@ -117,7 +112,16 @@ struct FDRecord
 	int servo;
 	int lastServo;
 	int lastAngle;
-	//unsigned char gradientThreshold;
+};
+
+struct LaneAssistStats
+{
+	int minAngleDiff;
+	int maxAngleDiff;
+
+	LaneAssistStats() :
+		minAngleDiff(std::numeric_limits<int>::max()), maxAngleDiff(std::numeric_limits<int>::min())
+	{}
 };
 
 
@@ -133,46 +137,49 @@ class BusMgr
 
 	enum eEdgeSearchState
 	{
-		ESS_SEARCH_POS_THRES,
+		ESS_SEARCH_THRES,
 		ESS_SEARCH_MAX_POS,
-		ESS_SEARCH_NEG_THRES,
 		ESS_SEARCH_MAX_NEG,
 		ESS_MAX
 	};
 
-	eBDErrorCode m_errorCode;
-	eBDImageProcMode m_ipm;
+	eBDErrorCode m_errorCode = EC_NONE;
 	SocketMgr * m_pSocketMgr;
-	Status m_status;
-	Config m_config;
-	eBDParamPage m_paramPage;
-	boost::thread m_thread;
-	volatile bool m_running;
-	bool m_interrupted;
-	boost::posix_time::ptime m_startTime;
-	boost::posix_time::time_duration m_diff;
 	ControlMgr * m_pCtrlMgr;
 	LaneTransform * m_pLaneTransform;
+	boost::thread m_thread;
+	volatile bool m_running = false;
+	bool m_interrupted = false;
+	eBDImageProcMode m_ipm = IPM_LANEASSIST;
+	Status m_status;
+	Config m_config;
+	eBDParamPage m_paramPage = PP_BLUR;
+	bool m_debugTrigger = false;
+	float m_speed = 0.0f;
+	boost::mutex m_accelMutex;
+	float m_acceleration = 0.0f;
+	int m_maxSpeed = 1000;
+	int m_actualMaxSpeed = 1000;
+	boost::mutex m_laneStateMutex;
+	LaneInfo m_lockedLanes[MAX_LANES];
+	cv::Vec2i m_searchRange[MAX_LANES];
+	boost::posix_time::ptime m_startTime;
+	boost::posix_time::time_duration m_diff;
+	int m_lastServo = 0;
 	cv::Mat m_frameResize;
 	cv::Mat m_frameGray;
 	cv::Mat m_frameROI;
 	cv::Mat m_frameFilter;
 	cv::Mat m_frameDouble;
-	LaneInfo m_lockedLanes[MAX_LANES];
-	cv::Vec2i m_searchRange[MAX_LANES];
-	int m_lastServo;
-	bool m_debugTrigger;
-	boost::mutex m_accelMutex;
-	float m_acceleration;
-	float m_speed;
-	int m_maxSpeed;
+	cv::Mat m_frameGradient;
+	cv::Mat m_frameGradientVert;
 	FDRecord m_FDRecords[c_maxFDRecords];
 	int m_currFDRIndex = 0;
 	bool m_FDRFull = false;
 	int m_selectedFDRIndex = 0;
 	bool m_updateFDR = true;
 	bool m_renderLanes = true;
-	boost::mutex m_laneStateMutex;
+	LaneAssistStats m_laStats;
 
 public:
 	BusMgr();

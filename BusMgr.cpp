@@ -5,7 +5,6 @@
  *      Author: rboyer
  */
 #include <cstdlib>
-#include <limits>
 #include <fstream>
 #include <vector>
 
@@ -15,6 +14,19 @@
 #include "ControlMgr.h"
 
 #define ENABLE_SOCKET_MGR 1
+
+#define FRAME_SKIP 1
+#define FRAME_BACKLOG_MIN -5
+
+#define ROI_TOP 72
+#define ROI_WIDTH 160
+#define ROI_HEIGHT 30
+
+#define RESISTANCE_FACTOR 0.01f
+#define SEARCH_BUFFER 50
+#define LANE_SWITCH_XOFFSET 10
+#define HYSTERESIS_DURATION 10
+
 
 using namespace std;
 using namespace cv;
@@ -42,39 +54,23 @@ T clamp(const T& val, const T& lower, const T& upper)
 }
 
 
-struct LaneAssistStats
-{
-	int minAngleDiff;
-	int maxAngleDiff;
-
-	LaneAssistStats() :
-		minAngleDiff(numeric_limits<int>::max()), maxAngleDiff(numeric_limits<int>::min())
-	{}
-};
-
-
-Mat m_frameGradient(ROI_HEIGHT, ROI_WIDTH, CV_32SC1, Scalar(0));
-Mat m_frameGradientVert(ROI_HEIGHT, ROI_WIDTH, CV_32SC1, Scalar(0));
-LaneAssistStats g_laStats;
-
-
 const char * const BusMgr::c_imageProcModeNames[] = {"None", "Gray", "Blur", "Lane Assist", "FDR"};
 const char * const BusMgr::c_imageProcStageNames[] = {"Gray", "Blur", "Lane Assist", "Send", "Total"};
 const cv::Vec2i BusMgr::c_defaultRange[MAX_LANES] = { {ROI_WIDTH / 2, -26}, {ROI_WIDTH / 2, ROI_WIDTH + 26} };
 
 
-BusMgr::BusMgr() :
-	m_errorCode(EC_NONE), m_ipm(IPM_LANEASSIST), m_paramPage(PP_BLUR), m_running(false), m_interrupted(false), m_lastServo(0), m_debugTrigger(false),
-	m_acceleration(0.0f), m_speed(0.0f), m_maxSpeed(1000)
+BusMgr::BusMgr()
 {
 	m_pSocketMgr = new SocketMgr(this);
 	m_pCtrlMgr = new ControlMgr();
 	m_pLaneTransform = new LaneTransform();
 
+	m_frameDouble = Mat(ROI_HEIGHT, ROI_WIDTH, CV_32SC1);
+	m_frameGradient = Mat(ROI_HEIGHT, ROI_WIDTH, CV_32SC1, Scalar(0));
+	m_frameGradientVert = Mat(ROI_HEIGHT, ROI_WIDTH, CV_32SC1, Scalar(0));
+
 	for (int i = 0; i < MAX_LANES; ++i)
 		m_searchRange[i] = c_defaultRange[i];
-
-	m_frameDouble = Mat(ROI_HEIGHT, ROI_WIDTH, CV_32SC1);
 }
 
 BusMgr::~BusMgr()
@@ -182,8 +178,7 @@ void BusMgr::DebugCommand()
 
 void BusMgr::ApplyAcceleration()
 {
-	const float resistanceFactor = 0.01f;
-	float resistance = -m_speed * resistanceFactor;
+	float resistance = -m_speed * RESISTANCE_FACTOR;
 	float effectiveAccel;
 	int targetMaxSpeed;
 	{
@@ -192,19 +187,18 @@ void BusMgr::ApplyAcceleration()
 		targetMaxSpeed = m_maxSpeed;
 	}
 
-	static int maxSpeed = 1000;
-	if ( targetMaxSpeed > (maxSpeed + 2) )
-		maxSpeed += 2;
-	else if ( targetMaxSpeed < (maxSpeed - 2) )
-		maxSpeed -= 2;
+	if ( targetMaxSpeed > (m_actualMaxSpeed + 2) )
+		m_actualMaxSpeed += 2;
+	else if ( targetMaxSpeed < (m_actualMaxSpeed - 2) )
+		m_actualMaxSpeed -= 2;
 	else
-		maxSpeed = targetMaxSpeed;
+		m_actualMaxSpeed = targetMaxSpeed;
 
 	m_speed += effectiveAccel;
 
 	int speed = abs(static_cast<int>(m_speed));
-	if (speed > maxSpeed)
-		speed = maxSpeed;
+	if (speed > m_actualMaxSpeed)
+		speed = m_actualMaxSpeed;
 	else if (speed < 10)
 		speed = 0;
 
@@ -216,34 +210,24 @@ void BusMgr::SwitchLane(eLane toLane)
 {
 	boost::mutex::scoped_lock lock(m_laneStateMutex);
 
-	// TODO: Revisit implementation due to lane assist algorithm modifications.
-	const int searchBuffer = 40;
 	if (toLane == LEFT_LANE)
 	{
-		if ( m_lockedLanes[LEFT_LANE].isActive() && (m_lockedLanes[LEFT_LANE].xTarget >= 10) )
+		if ( m_lockedLanes[LEFT_LANE].isActive() && (m_lockedLanes[LEFT_LANE].xTarget >= LANE_SWITCH_XOFFSET) )
 		{
-			//m_searchRange[RIGHT_LANE][0] = m_lockedLanes[LEFT_LANE].xTarget - 20;
-			//m_lastServo = TranslateXTargetToServo(RIGHT_LANE, m_searchRange[RIGHT_LANE][0] + 10);
-			//cout << "  DEBUG: Lane shift left; new right lane search start: " << m_searchRange[RIGHT_LANE][0] << endl;
-
-			m_searchRange[RIGHT_LANE] = Vec2i(m_lockedLanes[LEFT_LANE].xTarget - searchBuffer, m_lockedLanes[LEFT_LANE].xTarget + searchBuffer);
+			m_searchRange[RIGHT_LANE] = Vec2i(m_lockedLanes[LEFT_LANE].xTarget - SEARCH_BUFFER, m_lockedLanes[LEFT_LANE].xTarget + SEARCH_BUFFER);
 			TrimSearchRange(RIGHT_LANE, m_searchRange[RIGHT_LANE]);
-			m_searchRange[LEFT_LANE] = Vec2i(m_lockedLanes[LEFT_LANE].xTarget - searchBuffer, m_lockedLanes[LEFT_LANE].xTarget - (searchBuffer * 3));
+			m_searchRange[LEFT_LANE] = Vec2i(m_lockedLanes[LEFT_LANE].xTarget - SEARCH_BUFFER, m_lockedLanes[LEFT_LANE].xTarget - (SEARCH_BUFFER * 3));
 			TrimSearchRange(LEFT_LANE, m_searchRange[LEFT_LANE]);
 			cout << "  DEBUG: Lane shift left." << endl;
 		}
 	}
 	else
 	{
-		if ( m_lockedLanes[RIGHT_LANE].isActive() && (m_lockedLanes[RIGHT_LANE].xTarget <= 150) )
+		if ( m_lockedLanes[RIGHT_LANE].isActive() && (m_lockedLanes[RIGHT_LANE].xTarget <= (ROI_WIDTH - LANE_SWITCH_XOFFSET)) )
 		{
-			//m_searchRange[LEFT_LANE][0] = m_lockedLanes[RIGHT_LANE].xTarget + 20;
-			//m_lastServo = TranslateXTargetToServo(LEFT_LANE, m_searchRange[LEFT_LANE][0] - 10);
-			//cout << "  DEBUG: Lane shift right; new left lane search start: " << m_searchRange[LEFT_LANE][0] << endl;
-
-			m_searchRange[LEFT_LANE] = Vec2i(m_lockedLanes[RIGHT_LANE].xTarget + searchBuffer, m_lockedLanes[RIGHT_LANE].xTarget - searchBuffer);
+			m_searchRange[LEFT_LANE] = Vec2i(m_lockedLanes[RIGHT_LANE].xTarget + SEARCH_BUFFER, m_lockedLanes[RIGHT_LANE].xTarget - SEARCH_BUFFER);
 			TrimSearchRange(LEFT_LANE, m_searchRange[LEFT_LANE]);
-			m_searchRange[RIGHT_LANE] = Vec2i(m_lockedLanes[RIGHT_LANE].xTarget + searchBuffer, m_lockedLanes[RIGHT_LANE].xTarget + (searchBuffer * 3));
+			m_searchRange[RIGHT_LANE] = Vec2i(m_lockedLanes[RIGHT_LANE].xTarget + SEARCH_BUFFER, m_lockedLanes[RIGHT_LANE].xTarget + (SEARCH_BUFFER * 3));
 			TrimSearchRange(RIGHT_LANE, m_searchRange[RIGHT_LANE]);
 			cout << "  DEBUG: Lane shift right." << endl;
 		}
@@ -331,7 +315,6 @@ void BusMgr::WorkerFunc()
 			{
 				if (nextFrame != FRAME_SKIP)
 				{
-					//cout << "Frame processing delayed, nextFrame = " << nextFrame << endl;
 					m_status.numDroppedFrames++;
 
 					// Not possible to "catch up" on backlog when running full speed - just move on.
@@ -385,28 +368,31 @@ bool BusMgr::ProcessFrame(Mat & frame)
 {
 	PROFILE_START;
 
-	Mat * pFrameDisplay = NULL;
+	static bool laneAssistActive = false;
+	static bool autoPilotActive = false;
 
+	Mat * pFrameDisplay = NULL;
 	eBDImageProcMode ipm = m_ipm;
 	int processUs[IPS_MAX];
 	memset(processUs, 0, sizeof(processUs));
-	int servo = ControlMgr::cDefServo;
 
 	if (ipm == IPM_NONE)
 	{
 		pFrameDisplay = &frame;
+		laneAssistActive = false;
 	}
 	else if (ipm == IPM_DEBUG)
 	{
 		pFrameDisplay = ProcessDebugFrame();
+		laneAssistActive = false;
 	}
 	else
 	{
-		// Convert to grayscale image, flip, and focus to ROI.
+		// Convert to downsampled, grayscale image with correct orientation and focus to ROI.
 		resize(frame, m_frameResize, Size(), 0.5, 0.5, INTER_NEAREST);
 		cvtColor(m_frameResize, m_frameGray, CV_BGR2GRAY);
 		flip(m_frameGray, m_frameGray, -1);
-		m_frameROI = m_frameGray(Rect(0, 72, ROI_WIDTH, ROI_HEIGHT));
+		m_frameROI = m_frameGray(Rect(0, ROI_TOP, ROI_WIDTH, ROI_HEIGHT));
 
 		processUs[IPS_GRAY] = PROFILE_DIFF;
 		PROFILE_START;
@@ -414,6 +400,7 @@ bool BusMgr::ProcessFrame(Mat & frame)
 		if (ipm == IPM_GRAY)
 		{
 			pFrameDisplay = &m_frameROI;
+			laneAssistActive = false;
 		}
 		else
 		{
@@ -426,10 +413,11 @@ bool BusMgr::ProcessFrame(Mat & frame)
 			if (ipm == IPM_BLUR)
 			{
 				pFrameDisplay = &m_frameFilter;
+				laneAssistActive = false;
 			}
 			else
 			{
-				static bool laneAssistActive = false;
+
 				if (m_pCtrlMgr->GetLaneAssist())
 				{
 					if (!laneAssistActive)
@@ -446,7 +434,6 @@ bool BusMgr::ProcessFrame(Mat & frame)
 				else
 					laneAssistActive = false;
 
-				static bool autoPilotActive = false;
 				if (m_pCtrlMgr->GetAutoPilot())
 				{
 					if (!autoPilotActive)
@@ -469,7 +456,7 @@ bool BusMgr::ProcessFrame(Mat & frame)
 				}
 
 				// Run lane assist algorithm to calculate servo position.
-				servo = LaneAssistComputeServo(m_frameFilter);
+				int servo = LaneAssistComputeServo(m_frameFilter);
 
 				if (m_pCtrlMgr->GetLaneAssist())
 				{
@@ -590,7 +577,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 
 	// Perform edge detection based on gradient map.
 	// Search for gradients that exceed threshold; short hysteresis phase is implemented to find maximum gradient in neighborhood.
-	// Positive gradients are for the left lane, negative for the right.  (Assuming dark road and lighter lane markings/road edges.)
+	// Positive gradients are for the right lane, negative for the left.  (Assuming dark road and lighter lane markings/road edges.)
 
 	// Actual edge coordinates; separate bins for left and right lanes.
 	// Reserve enough for room to avoid ever needing to resize.
@@ -601,7 +588,6 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	uchar edgeMap[MAX_LANES][ROI_WIDTH][ROI_HEIGHT] = {0};
 
 	// FSM-based edge detection implementation.
-	const int hysteresisDuration = 10;
 	int gradient;
 	eEdgeSearchState ess;
 	int stateCountdown;
@@ -611,7 +597,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	for (int y = 0; y < frame.rows; ++y)
 	{
 		pRowGradient = m_frameGradient.ptr<int>(y);
-		ess = ESS_SEARCH_POS_THRES;
+		ess = ESS_SEARCH_THRES;
 
 		for (int x = xLeft; x <= xRight; ++x)
 		{
@@ -619,12 +605,12 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 
 			switch (ess)
 			{
-			case ESS_SEARCH_POS_THRES:
+			case ESS_SEARCH_THRES:
 				if (gradient >= m_config.gradientThreshold)
 				{
 					// Minimal positive gradient threshold crossed.
 					ess = ESS_SEARCH_MAX_POS;
-					stateCountdown = min(hysteresisDuration, (xRight - x));
+					stateCountdown = min(HYSTERESIS_DURATION, (xRight - x));
 					edgePos = x;
 					maxGradient = gradient;
 				}
@@ -632,7 +618,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 				{
 					// Minimal negative gradient threshold crossed.
 					ess = ESS_SEARCH_MAX_NEG;
-					stateCountdown = min(hysteresisDuration, (xRight - x));
+					stateCountdown = min(HYSTERESIS_DURATION, (xRight - x));
 					edgePos = x;
 					maxGradient = -gradient;
 				}
@@ -652,7 +638,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 					edgeMap[RIGHT_LANE][edgePos + 2][y] = 1;
 
 					ess = ESS_SEARCH_MAX_NEG;
-					stateCountdown = min(hysteresisDuration, (xRight - x));
+					stateCountdown = min(HYSTERESIS_DURATION, (xRight - x));
 					edgePos = x;
 					maxGradient = -gradient;
 				}
@@ -661,7 +647,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 					// State expired.
 					edgeMap[RIGHT_LANE][edgePos + 2][y] = 1;
 
-					ess = ESS_SEARCH_POS_THRES;
+					ess = ESS_SEARCH_THRES;
 				}
 				break;
 
@@ -679,7 +665,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 					edgeMap[LEFT_LANE][edgePos + 2][y] = 1;
 
 					ess = ESS_SEARCH_MAX_POS;
-					stateCountdown = min(hysteresisDuration, (xRight - x));
+					stateCountdown = min(HYSTERESIS_DURATION, (xRight - x));
 					edgePos = x;
 					maxGradient = gradient;
 				}
@@ -688,7 +674,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 					// State expired.
 					edgeMap[LEFT_LANE][edgePos + 2][y] = 1;
 
-					ess = ESS_SEARCH_POS_THRES;
+					ess = ESS_SEARCH_THRES;
 				}
 				break;
 
@@ -704,7 +690,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	bool edgeFound;
 	for (int x = 0; x < frame.cols; ++x)
 	{
-		ess = ESS_SEARCH_POS_THRES;
+		ess = ESS_SEARCH_THRES;
 		edgeFound = false;
 
 		for (int y = yBottom; y >= yTop; --y)
@@ -713,12 +699,12 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 
 			switch (ess)
 			{
-			case ESS_SEARCH_POS_THRES:
+			case ESS_SEARCH_THRES:
 				if (gradient >= m_config.gradientThreshold)
 				{
 					// Minimal positive gradient threshold crossed.
 					ess = ESS_SEARCH_MAX_POS;
-					stateCountdown = min(hysteresisDuration, (y - yTop));
+					stateCountdown = min(HYSTERESIS_DURATION, (y - yTop));
 					edgePos = y;
 					maxGradient = gradient;
 				}
@@ -887,10 +873,10 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 			else
 			{
 				int angleDiff = m_lockedLanes[LEFT_LANE].angle - m_lockedLanes[RIGHT_LANE].angle;
-				if (angleDiff > g_laStats.maxAngleDiff)
-					g_laStats.maxAngleDiff = angleDiff;
-				else if (angleDiff < g_laStats.minAngleDiff)
-					g_laStats.minAngleDiff = angleDiff;
+				if (angleDiff > m_laStats.maxAngleDiff)
+					m_laStats.maxAngleDiff = angleDiff;
+				else if (angleDiff < m_laStats.minAngleDiff)
+					m_laStats.minAngleDiff = angleDiff;
 			}
 
 			//m_config.gradientThreshold = maxGradient >> 2;
@@ -925,7 +911,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 		cout << "  Search start left: " << m_searchRange[LEFT_LANE][0] << ", right: " << m_searchRange[RIGHT_LANE][0] << endl;
 		//cout << "  Gradient threshold: " << static_cast<int>(m_config.gradientThreshold) << endl;
 		cout << "  Target: " << leftTarget << ", " << rightTarget << "; Servo: " << servo << endl;
-		cout << "  Min/max angle diff: " << g_laStats.minAngleDiff << ", " << g_laStats.maxAngleDiff << endl;
+		cout << "  Min/max angle diff: " << m_laStats.minAngleDiff << ", " << m_laStats.maxAngleDiff << endl;
 	}
 
 	currFDR.frame = frame.clone();
@@ -983,7 +969,7 @@ int BusMgr::TranslateXTargetToServo(eLane lane, int xTarget) const
 	const int centerX[MAX_LANES] = { 30, 141 };
 
 	// TODO: Try making servo factor adaptive (inverse relationship with speed).
-	const float offsetToServoFactor = 3.0f;
+	const float offsetToServoFactor = 3.5f;
 
 	int servo = ControlMgr::cDefServo + static_cast<int>( (xTarget - centerX[lane]) / offsetToServoFactor );
 
