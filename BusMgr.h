@@ -133,6 +133,7 @@ class BusMgr
 	static const char * const c_imageProcModeNames[];
 	static const char * const c_imageProcStageNames[];
 	static const cv::Vec2i c_defaultRange[MAX_LANES];
+	static const int c_centerX[MAX_LANES];
 	static constexpr int c_maxFDRecords = 150;
 
 	enum eEdgeSearchState
@@ -242,7 +243,7 @@ private:
 	cv::Mat * ProcessDebugFrame();
 	void DisplayCurrentParamPage();
 	int TranslateXTargetToServo(eLane lane, int xTarget) const;
-	void TrimSearchRange(eLane lane, cv::Vec2i & searchRange) const;
+	void TrimSearchRange(cv::Vec2i & searchRange) const;
 
 };
 
