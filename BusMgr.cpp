@@ -22,16 +22,23 @@
 #define ROI_WIDTH 160
 #define ROI_HEIGHT 30
 
-#define RESISTANCE_FACTOR 0.01f
-#define SEARCH_BUFFER 50
-#define LANE_SWITCH_XOFFSET 10
-#define HYSTERESIS_DURATION 10
-#define EDGE_MAP_ANGLE_THRESHOLD 30
-#define LANE_ANGLE_DIFF_MIN 0
-#define LANE_ANGLE_DIFF_MAX 100
-#define AUTO_PILOT_SPEED_CAP 800
-#define AUTO_PILOT_SPEED_CAP_FACTOR 8
-#define XOFFSET_SERVO_FACTOR 3.5f
+#define DEF_KERNEL_SIZE 5
+#define DEF_GRADIENT_THRESHOLD 40
+#define DEF_RESISTANCE_FACTOR 0.01f
+#define DEF_SEARCH_BUFFER 50
+#define DEF_LANE_SWITCH_XOFFSET 10
+#define DEF_HYSTERESIS_DURATION 10
+#define DEF_EDGE_MAP_ANGLE_THRESHOLD 30
+#define DEF_LANE_ANGLE_DIFF_MIN 0
+#define DEF_LANE_ANGLE_DIFF_MAX 100
+#define DEF_AUTO_PILOT_SPEED_CAP 800
+#define DEF_AUTO_PILOT_SPEED_CAP_FACTOR 8
+#define DEF_XOFFSET_SERVO_FACTOR 3.5f
+
+// Parameters for lane transform.
+#define DEF_ANGLE_DEVIATION_MAX 30
+#define DEF_ANGLE_LIMIT 60
+#define DEF_LANE_VOTE_THRESHOLD 20
 
 
 using namespace std;
@@ -66,7 +73,10 @@ const cv::Vec2i BusMgr::c_defaultRange[MAX_LANES] = { {ROI_WIDTH / 2, -26}, {ROI
 const int BusMgr::c_centerX[MAX_LANES] = { 30, 141 };
 
 
-BusMgr::BusMgr()
+BusMgr::BusMgr() :
+		m_config(Config(DEF_KERNEL_SIZE, DEF_GRADIENT_THRESHOLD, DEF_RESISTANCE_FACTOR, DEF_SEARCH_BUFFER, DEF_LANE_SWITCH_XOFFSET, DEF_HYSTERESIS_DURATION,
+					    DEF_EDGE_MAP_ANGLE_THRESHOLD, DEF_LANE_ANGLE_DIFF_MIN, DEF_LANE_ANGLE_DIFF_MAX, DEF_AUTO_PILOT_SPEED_CAP, DEF_AUTO_PILOT_SPEED_CAP_FACTOR,
+					    DEF_XOFFSET_SERVO_FACTOR, DEF_ANGLE_DEVIATION_MAX, DEF_ANGLE_LIMIT, DEF_LANE_VOTE_THRESHOLD))
 {
 	m_pSocketMgr = new SocketMgr(this);
 	m_pCtrlMgr = new ControlMgr();
@@ -151,6 +161,17 @@ void BusMgr::OutputConfig()
 	cout << "  Current Parameter Page=" << m_paramPage << endl;
 	cout << "  Kernel Size=" << (int)m_config.kernelSize << endl;
 	cout << "  Gradient Threshold=" << (int)m_config.gradientThreshold << endl;
+	cout << "  Resistance Factor=" << m_config.resistanceFactor << endl;
+	cout << "  Search Buffer=" << m_config.searchBuffer << endl;
+	cout << "  Lane Switch X-Offset=" << m_config.laneSwitchXOffset << endl;
+	cout << "  Hysteresis Duration=" << m_config.hysteresisDuration << endl;
+	cout << "  Edge Map Angle Threshold=" << m_config.edgeMapAngleThreshold << endl;
+	cout << "  Lane Angle Diff Min/Max=" << m_config.laneAngleDiffMin << "/" << m_config.laneAngleDiffMax << endl;
+	cout << "  Auto-pilot Speed Cap/Factor=" << m_config.autoPilotSpeedCap << "/" << m_config.autoPilotSpeedCapFactor << endl;
+	cout << "  X-Offset Servo Factor=" << m_config.xOffsetServoFactor << endl;
+	cout << "  Angle Deviation Max=" << m_config.angleDeviationMax << endl;
+	cout << "  Angle Limit=" << m_config.angleLimit << endl;
+	cout << "  Lane Vote Threshold=" << m_config.laneVoteThreshold << endl;
 }
 
 void BusMgr::UpdatePage()
@@ -175,6 +196,92 @@ void BusMgr::UpdateParam(int param, bool up)
 		else if (!up && (m_config.gradientThreshold > 1))
 			m_config.gradientThreshold--;
 		break;
+	case PP_RESISTANCEFACTOR:
+		if ( up && (m_config.resistanceFactor < 0.5f) )
+			m_config.resistanceFactor += 0.05f;
+		else if (!up && (m_config.resistanceFactor > 0.0f))
+			m_config.resistanceFactor -= 0.05f;
+		break;
+	case PP_SEARCHBUFFER:
+		if ( up && (m_config.searchBuffer < 100) )
+			++m_config.searchBuffer;
+		else if (!up && (m_config.searchBuffer > 1))
+			--m_config.searchBuffer;
+		break;
+	case PP_LANESWITCHXOFFSET:
+		if ( up && (m_config.laneSwitchXOffset < 50) )
+			++m_config.laneSwitchXOffset;
+		else if (!up && (m_config.laneSwitchXOffset > 1))
+			--m_config.laneSwitchXOffset;
+		break;
+	case PP_HYSTERESISDURATION:
+		if ( up && (m_config.hysteresisDuration < 50) )
+			++m_config.hysteresisDuration;
+		else if (!up && (m_config.hysteresisDuration > 1))
+			--m_config.hysteresisDuration;
+		break;
+	case PP_EDGEMAPANGLETHRESHOLD:
+		if ( up && (m_config.edgeMapAngleThreshold < 90) )
+			++m_config.edgeMapAngleThreshold;
+		else if (!up && (m_config.edgeMapAngleThreshold > 1))
+			--m_config.edgeMapAngleThreshold;
+		break;
+	case PP_LANEANGLEDIFF:
+		if (param == 1)
+		{
+			if ( up && (m_config.laneAngleDiffMin < 90) )
+				++m_config.laneAngleDiffMin;
+			else if (!up && (m_config.laneAngleDiffMin > -90))
+				--m_config.laneAngleDiffMin;
+		}
+		else
+		{
+			if ( up && (m_config.laneAngleDiffMax < 180) )
+				++m_config.laneAngleDiffMax;
+			else if (!up && (m_config.laneAngleDiffMax > 0))
+				--m_config.laneAngleDiffMax;
+		}
+		break;
+	case PP_AUTOPILOTSPEED:
+		if (param == 1)
+		{
+			if ( up && (m_config.autoPilotSpeedCap < 1000) )
+				m_config.autoPilotSpeedCap += 10;
+			else if (!up && (m_config.autoPilotSpeedCap > 100))
+				m_config.autoPilotSpeedCap -= 10;
+		}
+		else
+		{
+			if ( up && (m_config.autoPilotSpeedCapFactor < 30) )
+				++m_config.autoPilotSpeedCapFactor;
+			else if (!up && (m_config.autoPilotSpeedCapFactor > 0))
+				--m_config.autoPilotSpeedCapFactor;
+		}
+		break;
+	case PP_XOFFSETSERVOFACTOR:
+		if ( up && (m_config.xOffsetServoFactor < 5.0f) )
+			m_config.xOffsetServoFactor += 0.1f;
+		else if (!up && (m_config.xOffsetServoFactor > 1.0f))
+			m_config.xOffsetServoFactor -= 0.1f;
+		break;
+	case PP_ANGLEDEVIATIONMAX:
+		if ( up && (m_config.angleDeviationMax < 90) )
+			++m_config.angleDeviationMax;
+		else if (!up && (m_config.angleDeviationMax > 1))
+			--m_config.angleDeviationMax;
+		break;
+	case PP_ANGLELIMIT:
+		if ( up && (m_config.angleLimit < 90) )
+			++m_config.angleLimit;
+		else if (!up && (m_config.angleLimit > 1))
+			--m_config.angleLimit;
+		break;
+	case PP_LANEVOTETHRESHOLD:
+		if ( up && (m_config.laneVoteThreshold < 100) )
+			++m_config.laneVoteThreshold;
+		else if (!up && (m_config.laneVoteThreshold > 1))
+			--m_config.laneVoteThreshold;
+		break;
 	}
 }
 
@@ -185,7 +292,7 @@ void BusMgr::DebugCommand()
 
 void BusMgr::ApplyAcceleration()
 {
-	float resistance = -m_speed * RESISTANCE_FACTOR;
+	float resistance = -m_speed * m_config.resistanceFactor;
 	float effectiveAccel;
 	int targetMaxSpeed;
 	{
@@ -219,22 +326,22 @@ void BusMgr::SwitchLane(eLane toLane)
 
 	if (toLane == LEFT_LANE)
 	{
-		if ( m_lockedLanes[LEFT_LANE].isActive() && (m_lockedLanes[LEFT_LANE].xTarget >= LANE_SWITCH_XOFFSET) )
+		if ( m_lockedLanes[LEFT_LANE].isActive() && (m_lockedLanes[LEFT_LANE].xTarget >= m_config.laneSwitchXOffset) )
 		{
-			m_searchRange[RIGHT_LANE] = Vec2i(m_lockedLanes[LEFT_LANE].xTarget - SEARCH_BUFFER, m_lockedLanes[LEFT_LANE].xTarget + SEARCH_BUFFER);
+			m_searchRange[RIGHT_LANE] = Vec2i(m_lockedLanes[LEFT_LANE].xTarget - m_config.searchBuffer, m_lockedLanes[LEFT_LANE].xTarget + m_config.searchBuffer);
 			TrimSearchRange(m_searchRange[RIGHT_LANE]);
-			m_searchRange[LEFT_LANE] = Vec2i(m_lockedLanes[LEFT_LANE].xTarget - SEARCH_BUFFER, m_lockedLanes[LEFT_LANE].xTarget - (SEARCH_BUFFER * 3));
+			m_searchRange[LEFT_LANE] = Vec2i(m_lockedLanes[LEFT_LANE].xTarget - m_config.searchBuffer, m_lockedLanes[LEFT_LANE].xTarget - (m_config.searchBuffer * 3));
 			TrimSearchRange(m_searchRange[LEFT_LANE]);
 			cout << "  DEBUG: Lane shift left." << endl;
 		}
 	}
 	else
 	{
-		if ( m_lockedLanes[RIGHT_LANE].isActive() && (m_lockedLanes[RIGHT_LANE].xTarget <= (ROI_WIDTH - LANE_SWITCH_XOFFSET)) )
+		if ( m_lockedLanes[RIGHT_LANE].isActive() && (m_lockedLanes[RIGHT_LANE].xTarget <= (ROI_WIDTH - m_config.laneSwitchXOffset)) )
 		{
-			m_searchRange[LEFT_LANE] = Vec2i(m_lockedLanes[RIGHT_LANE].xTarget + SEARCH_BUFFER, m_lockedLanes[RIGHT_LANE].xTarget - SEARCH_BUFFER);
+			m_searchRange[LEFT_LANE] = Vec2i(m_lockedLanes[RIGHT_LANE].xTarget + m_config.searchBuffer, m_lockedLanes[RIGHT_LANE].xTarget - m_config.searchBuffer);
 			TrimSearchRange(m_searchRange[LEFT_LANE]);
-			m_searchRange[RIGHT_LANE] = Vec2i(m_lockedLanes[RIGHT_LANE].xTarget + SEARCH_BUFFER, m_lockedLanes[RIGHT_LANE].xTarget + (SEARCH_BUFFER * 3));
+			m_searchRange[RIGHT_LANE] = Vec2i(m_lockedLanes[RIGHT_LANE].xTarget + m_config.searchBuffer, m_lockedLanes[RIGHT_LANE].xTarget + (m_config.searchBuffer * 3));
 			TrimSearchRange(m_searchRange[RIGHT_LANE]);
 			cout << "  DEBUG: Lane shift right." << endl;
 		}
@@ -617,7 +724,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 				{
 					// Minimal positive gradient threshold crossed.
 					ess = ESS_SEARCH_MAX_POS;
-					stateCountdown = min(HYSTERESIS_DURATION, (xRight - x));
+					stateCountdown = min(m_config.hysteresisDuration, (xRight - x));
 					edgePos = x;
 					maxGradient = gradient;
 				}
@@ -625,7 +732,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 				{
 					// Minimal negative gradient threshold crossed.
 					ess = ESS_SEARCH_MAX_NEG;
-					stateCountdown = min(HYSTERESIS_DURATION, (xRight - x));
+					stateCountdown = min(m_config.hysteresisDuration, (xRight - x));
 					edgePos = x;
 					maxGradient = -gradient;
 				}
@@ -645,7 +752,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 					edgeMap[RIGHT_LANE][edgePos + 2][y] = 1;
 
 					ess = ESS_SEARCH_MAX_NEG;
-					stateCountdown = min(HYSTERESIS_DURATION, (xRight - x));
+					stateCountdown = min(m_config.hysteresisDuration, (xRight - x));
 					edgePos = x;
 					maxGradient = -gradient;
 				}
@@ -672,7 +779,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 					edgeMap[LEFT_LANE][edgePos + 2][y] = 1;
 
 					ess = ESS_SEARCH_MAX_POS;
-					stateCountdown = min(HYSTERESIS_DURATION, (xRight - x));
+					stateCountdown = min(m_config.hysteresisDuration, (xRight - x));
 					edgePos = x;
 					maxGradient = gradient;
 				}
@@ -710,7 +817,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 				{
 					// Minimal positive gradient threshold crossed.
 					ess = ESS_SEARCH_MAX_POS;
-					stateCountdown = min(HYSTERESIS_DURATION, (y - yTop));
+					stateCountdown = min(m_config.hysteresisDuration, (y - yTop));
 					edgePos = y;
 					maxGradient = gradient;
 				}
@@ -733,9 +840,9 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 
 			if (edgeFound)
 			{
-				if (lastAngle > EDGE_MAP_ANGLE_THRESHOLD)
+				if (lastAngle > m_config.edgeMapAngleThreshold)
 					edgeMap[LEFT_LANE][x][edgePos + 2] = 1;
-				else if (lastAngle < -EDGE_MAP_ANGLE_THRESHOLD)
+				else if (lastAngle < -m_config.edgeMapAngleThreshold)
 					edgeMap[RIGHT_LANE][x][edgePos + 2] = 1;
 				else
 					edgeMap[LEFT_LANE][x][edgePos + 2] = edgeMap[RIGHT_LANE][x][edgePos + 2] = 1;
@@ -802,7 +909,8 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 			prevActive[lane] = m_lockedLanes[lane].isActive();
 			prevAngle[lane] = m_lockedLanes[lane].angle;
 
-			m_pLaneTransform->LaneSearch(edges[lane], static_cast<eLane>(lane), m_searchRange[lane], m_lockedLanes[lane], debugOutput);
+			m_pLaneTransform->LaneSearch(edges[lane], static_cast<eLane>(lane), m_searchRange[lane], m_lockedLanes[lane], m_config.angleDeviationMax,
+										 m_config.angleLimit, m_config.laneVoteThreshold, debugOutput);
 		}
 
 		// If both lanes detected, compare their angles to sanitize.
@@ -812,7 +920,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 		if (m_lockedLanes[LEFT_LANE].isActive() && m_lockedLanes[RIGHT_LANE].isActive())
 		{
 			int angleDiff = m_lockedLanes[LEFT_LANE].angle - m_lockedLanes[RIGHT_LANE].angle;
-			if ( (angleDiff < LANE_ANGLE_DIFF_MIN) || (angleDiff > LANE_ANGLE_DIFF_MAX) )
+			if ( (angleDiff < m_config.laneAngleDiffMin) || (angleDiff > m_config.laneAngleDiffMax) )
 			{
 				if (!prevActive[LEFT_LANE])
 					m_lockedLanes[LEFT_LANE].deactivate();
@@ -831,7 +939,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 		}
 
 		// For active lane(s), calculate appropriate servo target, optionally render the lane, and adjust search range.
-		int searchBuffer = SEARCH_BUFFER;
+		int searchBuffer = m_config.searchBuffer;
 		int totalAngle = 0;
 		int activeCount = 0;
 		for (int lane = LEFT_LANE; lane < MAX_LANES; ++lane)
@@ -911,7 +1019,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 	// Limit max speed for auto-pilot based on servo value (i.e.: go slow around tight turns).
 	{
 		boost::mutex::scoped_lock lock(m_accelMutex);
-		m_maxSpeed = AUTO_PILOT_SPEED_CAP - (abs(servo - ControlMgr::cDefServo) * AUTO_PILOT_SPEED_CAP_FACTOR);
+		m_maxSpeed = m_config.autoPilotSpeedCap - (abs(servo - ControlMgr::cDefServo) * m_config.autoPilotSpeedCapFactor);
 	}
 
 	if (debugOutput)
@@ -967,12 +1075,47 @@ void BusMgr::DisplayCurrentParamPage()
 	case PP_GRADIENTTHRESHOLD:
 		cout << "  1) Gradient Threshold" << endl;
 		break;
+	case PP_RESISTANCEFACTOR:
+		cout << "  1) Resistance Factor" << endl;
+		break;
+	case PP_SEARCHBUFFER:
+		cout << "  1) Search Buffer" << endl;
+		break;
+	case PP_LANESWITCHXOFFSET:
+		cout << "  1) Lane Switch X-Offset" << endl;
+		break;
+	case PP_HYSTERESISDURATION:
+		cout << "  1) Hysteresis Duration" << endl;
+		break;
+	case PP_EDGEMAPANGLETHRESHOLD:
+		cout << "  1) Edge Map Angle Threshold" << endl;
+		break;
+	case PP_LANEANGLEDIFF:
+		cout << "  1) Lane Angle Diff Min" << endl;
+		cout << "  2) Lane Angle Diff Max" << endl;
+		break;
+	case PP_AUTOPILOTSPEED:
+		cout << "  1) Auto-pilot Speed Cap" << endl;
+		cout << "  2) Auto-pilot Speed Cap Factor" << endl;
+		break;
+	case PP_XOFFSETSERVOFACTOR:
+		cout << "  1) X-Offset Servo Factor" << endl;
+		break;
+	case PP_ANGLEDEVIATIONMAX:
+		cout << "  1) Angle Deviation Max" << endl;
+		break;
+	case PP_ANGLELIMIT:
+		cout << "  1) Angle Limit" << endl;
+		break;
+	case PP_LANEVOTETHRESHOLD:
+		cout << "  1) Lane Vote Threshold" << endl;
+		break;
 	}
 }
 
 int BusMgr::TranslateXTargetToServo(eLane lane, int xTarget) const
 {
-	int servo = ControlMgr::cDefServo + static_cast<int>( (xTarget - c_centerX[lane]) / XOFFSET_SERVO_FACTOR );
+	int servo = ControlMgr::cDefServo + static_cast<int>( (xTarget - c_centerX[lane]) / m_config.xOffsetServoFactor );
 	return clamp(servo, (ControlMgr::cDefServo - ControlMgr::cServoRange), (ControlMgr::cDefServo + ControlMgr::cServoRange));
 }
 

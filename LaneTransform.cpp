@@ -12,6 +12,7 @@
 
 #define PI 3.14159265
 
+
 using namespace std;
 using namespace cv;
 
@@ -82,26 +83,22 @@ bool LaneTransform::Load()
 	return true;
 }
 
-bool LaneTransform::LaneSearch(const vector<Vec3i> & edges, const eLane lane, const cv::Vec2i searchRange, LaneInfo & laneInfo, const bool debug /* = false */) const
+bool LaneTransform::LaneSearch(const vector<Vec3i> & edges, const eLane lane, const cv::Vec2i searchRange, LaneInfo & laneInfo, const int maxAngleDeviation,
+							   const int angleLimit, int laneVoteThreshold, const bool debug /* = false */) const
 {
 	const int cVoteArrayMedianX = c_voteArrayWidth / 2;
-	const int maxAngleDeviation = 30;
-	const int angleLimit = 60;
-	int lsLowThreshold = 20;
 	bool limitAngleDeviation = false;
 
 	if (laneInfo.isActive())
 	{
 		limitAngleDeviation = true;
-		lsLowThreshold = 10;
+		laneVoteThreshold >>= 1;
 	}
 
 	LaneInfo tempLaneInfo;
-	//int step = (lane == LEFT_LANE ? 1 : -1);
 	eLaneSearchState lss = LSS_WAIT_FOR_LOW_THRES;
 	bool done[2] = {false, false};
 
-	//for (int offset = (cVoteArrayMedianX - searchRange[0]); offset != (cVoteArrayMedianX - searchRange[1]); offset += step)
 	int offset = (searchRange[0] + searchRange[1]) / 2;
 	int range = abs(searchRange[0] - searchRange[1]);
 	int jump = 1;
@@ -115,7 +112,6 @@ bool LaneTransform::LaneSearch(const vector<Vec3i> & edges, const eLane lane, co
 		const short * pVote;
 		int currMaxVotes = 0;
 		int currBestLaneId = 0;
-		//bool done = false;
 
 		for (const Vec3i & edge : edges)
 		{
@@ -131,7 +127,7 @@ bool LaneTransform::LaneSearch(const vector<Vec3i> & edges, const eLane lane, co
 				{
 					pVote = m_packedVoteArray + index;
 					while (*pVote)
-						laneVoteTable[*pVote++] += edge[2]; // m_weightArray[edge[1]];
+						laneVoteTable[*pVote++] += edge[2];
 				}
 			}
 		}
@@ -170,7 +166,7 @@ bool LaneTransform::LaneSearch(const vector<Vec3i> & edges, const eLane lane, co
 		switch (lss)
 		{
 		case LSS_WAIT_FOR_LOW_THRES:
-			if (currMaxVotes >= lsLowThreshold)
+			if (currMaxVotes >= laneVoteThreshold)
 				lss = LSS_WAIT_FOR_DECAY;
 			break;
 
@@ -194,7 +190,7 @@ bool LaneTransform::LaneSearch(const vector<Vec3i> & edges, const eLane lane, co
 		jumpDir *= -1;
 	}
 
-	if (tempLaneInfo.votes < lsLowThreshold)
+	if (tempLaneInfo.votes < laneVoteThreshold)
 	{
 		if (debug)
 			cout << "    Debug final: lane not found" << endl;

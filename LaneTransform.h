@@ -72,7 +72,8 @@ public:
 	LaneTransform();
 
 	bool Load();
-	bool LaneSearch(const std::vector<cv::Vec3i> & edges, const eLane lane, const cv::Vec2i searchRange, LaneInfo & laneInfo, const bool debug = false) const;
+	bool LaneSearch(const std::vector<cv::Vec3i> & edges, const eLane lane, const cv::Vec2i searchRange, LaneInfo & laneInfo, const int maxAngleDeviation,
+					const int angleLimit, int laneVoteThreshold, const bool debug = false) const;
 	void RenderLane(cv::Mat & frame, const LaneInfo & laneInfo) const;
 	int GetLaneAngle(const int laneId) const;
 	float GetLaneSlope(const int laneId) const { return m_slopeArray[laneId]; }
