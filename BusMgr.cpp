@@ -320,6 +320,24 @@ void BusMgr::ApplyAcceleration()
 	SetSpeed(speed);
 }
 
+void BusMgr::AdjustServo()
+{
+	//static int count = 0;
+	//if (++count == 2)
+	//{
+	//	count = 0;
+		if (m_pCtrlMgr->GetLaneAssist())
+		{
+			if (m_servoTarget > m_servoActual )
+				++m_servoActual;
+			else if (m_servoTarget < m_servoActual)
+				--m_servoActual;
+
+			m_pCtrlMgr->SetServo(m_servoActual);
+		}
+	//}
+}
+
 void BusMgr::SwitchLane(eLane toLane)
 {
 	boost::mutex::scoped_lock lock(m_laneStateMutex);
@@ -574,13 +592,20 @@ bool BusMgr::ProcessFrame(Mat & frame)
 
 				if (m_pCtrlMgr->GetLaneAssist())
 				{
-					m_pCtrlMgr->SetServo(servo);
+					m_servoTarget = servo;
+					//m_pCtrlMgr->SetServo(servo);
 				}
 
 				processUs[IPS_LANEASSIST] = PROFILE_DIFF;
 				PROFILE_START;
 
-				pFrameDisplay = &m_frameFilter;
+				if (m_debugMode)
+					pFrameDisplay = &m_frameFilter;
+				else
+				{
+					flip(frame, frame, -1);
+					pFrameDisplay = &frame;
+				}
 			}
 		}
 	}

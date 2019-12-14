@@ -191,6 +191,8 @@ class BusMgr
 	float m_acceleration = 0.0f;
 	int m_maxSpeed = 1000;
 	int m_actualMaxSpeed = 1000;
+	int m_servoTarget = ControlMgr::cDefServo;
+	int m_servoActual = ControlMgr::cDefServo;
 	boost::mutex m_laneStateMutex;
 	LaneInfo m_lockedLanes[MAX_LANES];
 	cv::Vec2i m_searchRange[MAX_LANES];
@@ -211,6 +213,7 @@ class BusMgr
 	bool m_updateFDR = true;
 	bool m_renderLanes = true;
 	LaneAssistStats m_laStats;
+	bool m_debugMode = true;
 
 public:
 	BusMgr();
@@ -231,6 +234,7 @@ public:
 	void UpdateParam(int param, bool up);
 	void DebugCommand();
 	void ToggleRenderLanes() { m_renderLanes = !m_renderLanes; }
+	void ToggleDebugMode() { m_debugMode = !m_debugMode; }
 
 	void SetSpeed(int speed) { m_pCtrlMgr->SetSpeed(speed); }
 	void SetAcceleration(float accel)
@@ -239,6 +243,7 @@ public:
 		m_acceleration = accel;
 	}
 	void ApplyAcceleration();
+	void AdjustServo();
 	void SetReverse(bool reverse) { m_pCtrlMgr->SetReverse(reverse); }
 	void SetServo(int servo) { m_pCtrlMgr->SetServo(servo); }
 	void SetLaneAssist(bool enable) { m_pCtrlMgr->SetLaneAssist(enable); }

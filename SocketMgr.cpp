@@ -245,6 +245,10 @@ void SocketMgr::ReadCommandsWorker()
 		{
 			m_owner->SwitchLane(RIGHT_LANE);
 		}
+		else if (strcmp(recvBuffer, "debugmode") == 0)
+		{
+			m_owner->ToggleDebugMode();
+		}
 	}
 
 	cout << "Socket manager command reader thread exited." << endl;

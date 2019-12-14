@@ -159,6 +159,7 @@ int main(void)
 		}
 
 		busMgr.ApplyAcceleration();
+		busMgr.AdjustServo();
 
 		boost::this_thread::sleep(boost::posix_time::milliseconds(5));
 	}
