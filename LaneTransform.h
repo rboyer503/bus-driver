@@ -41,9 +41,9 @@ private:
 	static const std::string c_indexFileName;
 	static const std::string c_voteArrayFileName;
 	static const std::string c_laneFileName;
-	static constexpr int c_voteArrayWidth = 230;
+	static constexpr int c_voteArrayWidth = 332;
 	static constexpr int c_voteArrayHeight = 30;
-	static constexpr int c_packedVoteBufferSize = 2142; // (ROI_HEIGHT * c_laneVariants) + 1 + extra room for null terminator values for each grid position with > 0 votes.
+	static constexpr int c_packedVoteBufferSize = 2277; // (ROI_HEIGHT * c_laneVariants) + 1 + extra room for null terminator values for each grid position with > 0 votes.
 	static constexpr int c_numStartAngles = 41;
 	static constexpr int c_numSlopeAdjust = 1;
 	static constexpr int c_laneVariants = (c_numStartAngles * c_numSlopeAdjust);
@@ -77,6 +77,7 @@ public:
 	void RenderLane(cv::Mat & frame, const LaneInfo & laneInfo) const;
 	int GetLaneAngle(const int laneId) const;
 	float GetLaneSlope(const int laneId) const { return m_slopeArray[laneId]; }
+	int GetLaneXPos(const LaneInfo & laneInfo, int yPos) const;
 };
 
 #endif /* LANETRANSFORM_H_ */

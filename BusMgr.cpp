@@ -31,14 +31,14 @@
 #define DEF_EDGE_MAP_ANGLE_THRESHOLD 30
 #define DEF_LANE_ANGLE_DIFF_MIN 0
 #define DEF_LANE_ANGLE_DIFF_MAX 100
-#define DEF_AUTO_PILOT_SPEED_CAP 800
+#define DEF_AUTO_PILOT_SPEED_CAP 700
 #define DEF_AUTO_PILOT_SPEED_CAP_FACTOR 8
 #define DEF_XOFFSET_SERVO_FACTOR 3.5f
 
 // Parameters for lane transform.
-#define DEF_ANGLE_DEVIATION_MAX 30
+#define DEF_ANGLE_DEVIATION_MAX 12
 #define DEF_ANGLE_LIMIT 60
-#define DEF_LANE_VOTE_THRESHOLD 20
+#define DEF_LANE_VOTE_THRESHOLD 40
 
 
 using namespace std;
@@ -70,7 +70,7 @@ T clamp(const T& val, const T& lower, const T& upper)
 const char * const BusMgr::c_imageProcModeNames[] = {"None", "Gray", "Blur", "Lane Assist", "FDR"};
 const char * const BusMgr::c_imageProcStageNames[] = {"Gray", "Blur", "Lane Assist", "Send", "Total"};
 const cv::Vec2i BusMgr::c_defaultRange[MAX_LANES] = { {ROI_WIDTH / 2, -26}, {ROI_WIDTH / 2, ROI_WIDTH + 26} };
-const int BusMgr::c_centerX[MAX_LANES] = { 30, 141 };
+const int BusMgr::c_centerX[MAX_LANES] = { 21, 146 };
 
 
 BusMgr::BusMgr() :
@@ -944,8 +944,13 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 		// If both lanes were already established, deactivate the one that has undergone the larger angle change.
 		if (m_lockedLanes[LEFT_LANE].isActive() && m_lockedLanes[RIGHT_LANE].isActive())
 		{
-			int angleDiff = m_lockedLanes[LEFT_LANE].angle - m_lockedLanes[RIGHT_LANE].angle;
-			if ( (angleDiff < m_config.laneAngleDiffMin) || (angleDiff > m_config.laneAngleDiffMax) )
+			int laneTopX[MAX_LANES];
+			for (int lane = LEFT_LANE; lane < MAX_LANES; ++lane)
+				laneTopX[lane] = m_pLaneTransform->GetLaneXPos(m_lockedLanes[lane], 0);
+
+			//int angleDiff = m_lockedLanes[LEFT_LANE].angle - m_lockedLanes[RIGHT_LANE].angle;
+			//if ( (angleDiff < m_config.laneAngleDiffMin) || (angleDiff > m_config.laneAngleDiffMax) )
+			if ( (laneTopX[RIGHT_LANE] - laneTopX[LEFT_LANE]) < m_config.laneAngleDiffMin )
 			{
 				if (!prevActive[LEFT_LANE])
 					m_lockedLanes[LEFT_LANE].deactivate();

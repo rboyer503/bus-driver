@@ -29,8 +29,8 @@ LaneTransform::LaneTransform()
 	for (int y = 0; y < divisionSize; ++y)
 	{
 		m_weightArray[y] = 1;
-		m_weightArray[y + divisionSize] = 1;
-		m_weightArray[y + (divisionSize * 2)] = 1;
+		m_weightArray[y + divisionSize] = 2;
+		m_weightArray[y + (divisionSize * 2)] = 3;
 	}
 
 	for (int laneId = 0; laneId < c_laneVariants; ++laneId)
@@ -127,7 +127,7 @@ bool LaneTransform::LaneSearch(const vector<Vec3i> & edges, const eLane lane, co
 				{
 					pVote = m_packedVoteArray + index;
 					while (*pVote)
-						laneVoteTable[*pVote++] += edge[2];
+						laneVoteTable[*pVote++] += (edge[2] * m_weightArray[edge[1]]);
 				}
 			}
 		}
@@ -195,8 +195,23 @@ bool LaneTransform::LaneSearch(const vector<Vec3i> & edges, const eLane lane, co
 		if (debug)
 			cout << "    Debug final: lane not found" << endl;
 
-		laneInfo.deactivate();
-		return false;
+		if (laneInfo.isActive())
+		{
+			if ( (lane == LEFT_LANE) && (laneInfo.xTarget >= 120) )
+				;
+			else if ( (lane == RIGHT_LANE) && (laneInfo.xTarget <= 40) )
+				;
+			else
+			{
+				laneInfo.deactivate();
+				return false;
+			}
+		}
+		else
+		{
+			laneInfo.deactivate();
+			return false;
+		}
 	}
 
 	if (debug)
@@ -223,4 +238,10 @@ void LaneTransform::RenderLane(Mat & frame, const LaneInfo & laneInfo) const
 int LaneTransform::GetLaneAngle(const int laneId) const
 {
 	return ( (laneId / c_numSlopeAdjust) - (c_numStartAngles >> 1) ) * 4;
+}
+
+int LaneTransform::GetLaneXPos(const LaneInfo & laneInfo, int yPos) const
+{
+	int offset = (c_voteArrayWidth / 2) - laneInfo.xTarget;
+	return m_lanes[laneInfo.laneId][yPos] - offset;
 }
