@@ -213,7 +213,7 @@ class BusMgr
 	bool m_updateFDR = true;
 	bool m_renderLanes = true;
 	LaneAssistStats m_laStats;
-	bool m_debugMode = true;
+	bool m_debugMode = false;
 
 public:
 	BusMgr();

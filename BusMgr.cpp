@@ -611,20 +611,25 @@ bool BusMgr::ProcessFrame(Mat & frame)
 	}
 
 	// Encode for wifi transmission.
-	unique_ptr<vector<uchar> > pBuf = std::make_unique<vector<uchar> >();
-	imencode(".bmp", *pFrameDisplay, *pBuf);
-
-	// Transmit to client.
-#ifdef ENABLE_SOCKET_MGR
-	if (!m_pSocketMgr->SendFrame(std::move(pBuf)))
+	unique_ptr<vector<uchar> > pBuf;
+	static int sendToClient = 0;
+	if (++sendToClient % 2)
 	{
-		// Client probably disconnected - exit streaming loop and wait for a new connection.
-		m_errorCode = EC_SENDFAIL;
-		return false;
-	}
+		pBuf = std::make_unique<vector<uchar> >();
+		imencode(".bmp", *pFrameDisplay, *pBuf);
+
+		// Transmit to client.
+#ifdef ENABLE_SOCKET_MGR
+		if (!m_pSocketMgr->SendFrame(std::move(pBuf)))
+		{
+			// Client probably disconnected - exit streaming loop and wait for a new connection.
+			m_errorCode = EC_SENDFAIL;
+			return false;
+		}
 #endif
 
-	processUs[IPS_SENT] = PROFILE_DIFF;
+		processUs[IPS_SENT] = PROFILE_DIFF;
+	}
 
 	// Update status.
 	if (!m_status.IsSuppressed())
