@@ -59,13 +59,13 @@ enum eBDParamPage
 {
 	PP_BLUR,
 	PP_GRADIENTTHRESHOLD,
-	PP_RESISTANCEFACTOR,
-	PP_SEARCHBUFFER,
+	PP_SEARCH,
 	PP_LANESWITCHXOFFSET,
 	PP_HYSTERESISDURATION,
 	PP_EDGEMAPANGLETHRESHOLD,
 	PP_LANEANGLEDIFF,
 	PP_AUTOPILOTSPEED,
+	PP_AUTOPILOTACCEL,
 	PP_XOFFSETSERVOFACTOR,
 	PP_ANGLEDEVIATIONMAX,
 	PP_ANGLELIMIT,
@@ -110,8 +110,9 @@ struct Config
 {
 	unsigned char kernelSize; // Gaussian kernel size used for preliminary blur op.
 	unsigned char gradientThreshold; // Threshold for edge detection.
-	float resistanceFactor; // Used to simulate wind resistance/reduce acceleration.
+	//float resistanceFactor; // Used to simulate wind resistance/reduce acceleration - removed as this is now calculated based on max speed and acceleration.
 	int searchBuffer; // Defines extent of search range - lane search will extend searchBuffer in each direction from expected center position of lane.
+	int searchBias; // Offset of search center position; biases lane search to start closer to the center of the road.
 	int laneSwitchXOffset; // Active lane must be offset from screen edge by this amount to allow lane switch op.
 	int hysteresisDuration; // Suppress edge detection for this long in order to find local gradient maxima so we find best edge in the neighborhood.
 	int edgeMapAngleThreshold; // Vertical edges assigned to left, right, or both buckets based on road angle - angles exceeding this threshold are assigned to only one bucket.
@@ -119,17 +120,18 @@ struct Config
 	int laneAngleDiffMax; // Maximum difference between left and right lane angles - above this maximum suggests one or both lanes are false positives.
 	int autoPilotSpeedCap; // Maximum auto-pilot speed.
 	int autoPilotSpeedCapFactor; // Factor controlling how much max speed decreases when turning - higher value results in lower max speed when turning.
+	float autoPilotAccel; // Acceleration value (up to 10.0f) used when auto-pilot active.
 	float xOffsetServoFactor; // Factor controlling how much servo changes when not centered on lane - higher value decreases servo change.
 	int angleDeviationMax; // Maximum change in angle for a lane - if lane candidate angle change exceeds this value, ignore it.
 	int angleLimit; // Ignore lane candidates exceeding this angle - used inversely for both lanes.
 	int laneVoteThreshold; // Ignore lane candidates that don't have at least this many votes.
-	Config(unsigned char _kernelSize, unsigned char _gradientThreshold, float _resistanceFactor, int _searchBuffer, int _laneSwitchXOffset,
+	Config(unsigned char _kernelSize, unsigned char _gradientThreshold, int _searchBuffer, int _searchBias, int _laneSwitchXOffset,
 		   int _hysteresisDuration, int _edgeMapAngleThreshold, int _laneAngleDiffMin, int _laneAngleDiffMax,
-		   int _autoPilotSpeedCap, int _autoPilotSpeedCapFactor, float _xOffsetServoFactor,
+		   int _autoPilotSpeedCap, int _autoPilotSpeedCapFactor, float _autoPilotAccel, float _xOffsetServoFactor,
 		   int _angleDeviationMax, int _angleLimit, int _laneVoteThreshold) :
-		kernelSize(_kernelSize), gradientThreshold(_gradientThreshold), resistanceFactor(_resistanceFactor), searchBuffer(_searchBuffer), laneSwitchXOffset(_laneSwitchXOffset),
+		kernelSize(_kernelSize), gradientThreshold(_gradientThreshold), searchBuffer(_searchBuffer), searchBias(_searchBias), laneSwitchXOffset(_laneSwitchXOffset),
 		hysteresisDuration(_hysteresisDuration), edgeMapAngleThreshold(_edgeMapAngleThreshold), laneAngleDiffMin(_laneAngleDiffMin), laneAngleDiffMax(_laneAngleDiffMax),
-		autoPilotSpeedCap(_autoPilotSpeedCap), autoPilotSpeedCapFactor(_autoPilotSpeedCapFactor), xOffsetServoFactor(_xOffsetServoFactor),
+		autoPilotSpeedCap(_autoPilotSpeedCap), autoPilotSpeedCapFactor(_autoPilotSpeedCapFactor), autoPilotAccel(_autoPilotAccel), xOffsetServoFactor(_xOffsetServoFactor),
 		angleDeviationMax(_angleDeviationMax), angleLimit(_angleLimit), laneVoteThreshold(_laneVoteThreshold)
 	{}
 };
@@ -189,6 +191,7 @@ class BusMgr
 	float m_speed = 0.0f;
 	boost::mutex m_accelMutex;
 	float m_acceleration = 0.0f;
+	float m_maxAccel = 10.0f;
 	int m_maxSpeed = 1000;
 	int m_actualMaxSpeed = 1000;
 	int m_servoTarget = ControlMgr::cDefServo;
@@ -237,10 +240,11 @@ public:
 	void ToggleDebugMode() { m_debugMode = !m_debugMode; }
 
 	void SetSpeed(int speed) { m_pCtrlMgr->SetSpeed(speed); }
-	void SetAcceleration(float accel)
+	void SetAcceleration(float accel, float maxAccel = 10.0f)
 	{
 		boost::mutex::scoped_lock lock(m_accelMutex);
 		m_acceleration = accel;
+		m_maxAccel = maxAccel;
 	}
 	void ApplyAcceleration();
 	void AdjustServo();

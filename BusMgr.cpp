@@ -24,15 +24,17 @@
 
 #define DEF_KERNEL_SIZE 5
 #define DEF_GRADIENT_THRESHOLD 40
-#define DEF_RESISTANCE_FACTOR 0.01f
+//#define DEF_RESISTANCE_FACTOR 0.00667f
 #define DEF_SEARCH_BUFFER 50
+#define DEF_SEARCH_BIAS 10
 #define DEF_LANE_SWITCH_XOFFSET 10
 #define DEF_HYSTERESIS_DURATION 10
 #define DEF_EDGE_MAP_ANGLE_THRESHOLD 30
 #define DEF_LANE_ANGLE_DIFF_MIN 0
 #define DEF_LANE_ANGLE_DIFF_MAX 100
 #define DEF_AUTO_PILOT_SPEED_CAP 700
-#define DEF_AUTO_PILOT_SPEED_CAP_FACTOR 8
+#define DEF_AUTO_PILOT_SPEED_CAP_FACTOR 6
+#define DEF_AUTO_PILOT_ACCEL 4.0f
 #define DEF_XOFFSET_SERVO_FACTOR 3.5f
 
 // Parameters for lane transform.
@@ -74,9 +76,9 @@ const int BusMgr::c_centerX[MAX_LANES] = { 21, 146 };
 
 
 BusMgr::BusMgr() :
-		m_config(Config(DEF_KERNEL_SIZE, DEF_GRADIENT_THRESHOLD, DEF_RESISTANCE_FACTOR, DEF_SEARCH_BUFFER, DEF_LANE_SWITCH_XOFFSET, DEF_HYSTERESIS_DURATION,
+		m_config(Config(DEF_KERNEL_SIZE, DEF_GRADIENT_THRESHOLD, DEF_SEARCH_BUFFER, DEF_SEARCH_BIAS, DEF_LANE_SWITCH_XOFFSET, DEF_HYSTERESIS_DURATION,
 					    DEF_EDGE_MAP_ANGLE_THRESHOLD, DEF_LANE_ANGLE_DIFF_MIN, DEF_LANE_ANGLE_DIFF_MAX, DEF_AUTO_PILOT_SPEED_CAP, DEF_AUTO_PILOT_SPEED_CAP_FACTOR,
-					    DEF_XOFFSET_SERVO_FACTOR, DEF_ANGLE_DEVIATION_MAX, DEF_ANGLE_LIMIT, DEF_LANE_VOTE_THRESHOLD))
+						DEF_AUTO_PILOT_ACCEL, DEF_XOFFSET_SERVO_FACTOR, DEF_ANGLE_DEVIATION_MAX, DEF_ANGLE_LIMIT, DEF_LANE_VOTE_THRESHOLD))
 {
 	m_pSocketMgr = new SocketMgr(this);
 	m_pCtrlMgr = new ControlMgr();
@@ -161,13 +163,13 @@ void BusMgr::OutputConfig()
 	cout << "  Current Parameter Page=" << m_paramPage << endl;
 	cout << "  Kernel Size=" << (int)m_config.kernelSize << endl;
 	cout << "  Gradient Threshold=" << (int)m_config.gradientThreshold << endl;
-	cout << "  Resistance Factor=" << m_config.resistanceFactor << endl;
-	cout << "  Search Buffer=" << m_config.searchBuffer << endl;
+	cout << "  Search Buffer/Bias=" << m_config.searchBuffer << "/" << m_config.searchBias << endl;
 	cout << "  Lane Switch X-Offset=" << m_config.laneSwitchXOffset << endl;
 	cout << "  Hysteresis Duration=" << m_config.hysteresisDuration << endl;
 	cout << "  Edge Map Angle Threshold=" << m_config.edgeMapAngleThreshold << endl;
 	cout << "  Lane Angle Diff Min/Max=" << m_config.laneAngleDiffMin << "/" << m_config.laneAngleDiffMax << endl;
 	cout << "  Auto-pilot Speed Cap/Factor=" << m_config.autoPilotSpeedCap << "/" << m_config.autoPilotSpeedCapFactor << endl;
+	cout << "  Auto-pilot Accel=" << m_config.autoPilotAccel << endl;
 	cout << "  X-Offset Servo Factor=" << m_config.xOffsetServoFactor << endl;
 	cout << "  Angle Deviation Max=" << m_config.angleDeviationMax << endl;
 	cout << "  Angle Limit=" << m_config.angleLimit << endl;
@@ -196,17 +198,21 @@ void BusMgr::UpdateParam(int param, bool up)
 		else if (!up && (m_config.gradientThreshold > 1))
 			m_config.gradientThreshold--;
 		break;
-	case PP_RESISTANCEFACTOR:
-		if ( up && (m_config.resistanceFactor < 0.5f) )
-			m_config.resistanceFactor += 0.05f;
-		else if (!up && (m_config.resistanceFactor > 0.0f))
-			m_config.resistanceFactor -= 0.05f;
-		break;
-	case PP_SEARCHBUFFER:
-		if ( up && (m_config.searchBuffer < 100) )
-			++m_config.searchBuffer;
-		else if (!up && (m_config.searchBuffer > 1))
-			--m_config.searchBuffer;
+	case PP_SEARCH:
+		if (param == 1)
+		{
+			if ( up && (m_config.searchBuffer < 100) )
+				++m_config.searchBuffer;
+			else if (!up && (m_config.searchBuffer > 1))
+				--m_config.searchBuffer;
+		}
+		else
+		{
+			if ( up && (m_config.searchBias < 20) )
+				++m_config.searchBias;
+			else if (!up && (m_config.searchBias > 0))
+				--m_config.searchBias;
+		}
 		break;
 	case PP_LANESWITCHXOFFSET:
 		if ( up && (m_config.laneSwitchXOffset < 50) )
@@ -258,6 +264,12 @@ void BusMgr::UpdateParam(int param, bool up)
 				--m_config.autoPilotSpeedCapFactor;
 		}
 		break;
+	case PP_AUTOPILOTACCEL:
+		if ( up && (m_config.autoPilotAccel < 10.0f) )
+			m_config.autoPilotAccel += 0.5f;
+		else if (!up && (m_config.autoPilotAccel > 1.0f))
+			m_config.autoPilotAccel -= 0.5f;
+		break;
 	case PP_XOFFSETSERVOFACTOR:
 		if ( up && (m_config.xOffsetServoFactor < 5.0f) )
 			m_config.xOffsetServoFactor += 0.1f;
@@ -292,12 +304,13 @@ void BusMgr::DebugCommand()
 
 void BusMgr::ApplyAcceleration()
 {
-	float resistance = -m_speed * m_config.resistanceFactor;
+	//float resistanceFactor = m_maxAccel / m_actualMaxSpeed;
+	//float resistance = -m_speed * resistanceFactor; // m_config.resistanceFactor;
 	float effectiveAccel;
 	int targetMaxSpeed;
 	{
 		boost::mutex::scoped_lock lock(m_accelMutex);
-		effectiveAccel = m_acceleration + resistance;
+		effectiveAccel = m_acceleration - ((m_speed / m_actualMaxSpeed) * m_maxAccel);
 		targetMaxSpeed = m_maxSpeed;
 	}
 
@@ -573,7 +586,7 @@ bool BusMgr::ProcessFrame(Mat & frame)
 						autoPilotActive = true;
 
 						// Auto-pilot just activated - initialize acceleration.
-						SetAcceleration(8.0f);
+						SetAcceleration(m_config.autoPilotAccel, m_config.autoPilotAccel);
 					}
 				}
 				else
@@ -977,6 +990,7 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 		int searchBuffer = m_config.searchBuffer;
 		int totalAngle = 0;
 		int activeCount = 0;
+		int bias = m_config.searchBias;
 		for (int lane = LEFT_LANE; lane < MAX_LANES; ++lane)
 		{
 			if (m_lockedLanes[lane].isActive())
@@ -986,15 +1000,16 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 				if (m_renderLanes)
 					m_pLaneTransform->RenderLane(frame, m_lockedLanes[lane]);
 
-				m_searchRange[lane] = Vec2i(m_lockedLanes[lane].xTarget + searchBuffer, m_lockedLanes[lane].xTarget - searchBuffer);
+				m_searchRange[lane] = Vec2i(m_lockedLanes[lane].xTarget + searchBuffer + bias, m_lockedLanes[lane].xTarget - searchBuffer + bias);
 				TrimSearchRange(m_searchRange[lane]);
 
 				totalAngle += m_lockedLanes[lane].angle;
 				++activeCount;
 			}
 
-			// Swap search buffer "polarity" for right lane.
+			// Swap search buffer "polarity" and reverse bias for right lane.
 			searchBuffer *= -1;
+			bias *= -1;
 		}
 
 		// Miscellaneous post-processing.
@@ -1008,13 +1023,13 @@ int BusMgr::LaneAssistComputeServo(cv::Mat & frame)
 				// One lane is active; set reasonable search range for the other lane.
 				if (m_lockedLanes[LEFT_LANE].isActive())
 				{
-					m_searchRange[RIGHT_LANE][0] = m_searchRange[LEFT_LANE][0];
+					m_searchRange[RIGHT_LANE][0] = m_searchRange[LEFT_LANE][0] - (m_config.searchBias * 2);
 					m_searchRange[RIGHT_LANE][1] = c_defaultRange[RIGHT_LANE][1];
 					TrimSearchRange(m_searchRange[RIGHT_LANE]);
 				}
 				else
 				{
-					m_searchRange[LEFT_LANE][0] = m_searchRange[RIGHT_LANE][0];
+					m_searchRange[LEFT_LANE][0] = m_searchRange[RIGHT_LANE][0] + (m_config.searchBias * 2);
 					m_searchRange[LEFT_LANE][1] = c_defaultRange[LEFT_LANE][1];
 					TrimSearchRange(m_searchRange[LEFT_LANE]);
 				}
@@ -1110,11 +1125,9 @@ void BusMgr::DisplayCurrentParamPage()
 	case PP_GRADIENTTHRESHOLD:
 		cout << "  1) Gradient Threshold" << endl;
 		break;
-	case PP_RESISTANCEFACTOR:
-		cout << "  1) Resistance Factor" << endl;
-		break;
-	case PP_SEARCHBUFFER:
+	case PP_SEARCH:
 		cout << "  1) Search Buffer" << endl;
+		cout << "  2) Search Bias" << endl;
 		break;
 	case PP_LANESWITCHXOFFSET:
 		cout << "  1) Lane Switch X-Offset" << endl;
@@ -1132,6 +1145,9 @@ void BusMgr::DisplayCurrentParamPage()
 	case PP_AUTOPILOTSPEED:
 		cout << "  1) Auto-pilot Speed Cap" << endl;
 		cout << "  2) Auto-pilot Speed Cap Factor" << endl;
+		break;
+	case PP_AUTOPILOTACCEL:
+		cout << "  1) Auto-pilot Accel" << endl;
 		break;
 	case PP_XOFFSETSERVOFACTOR:
 		cout << "  1) X-Offset Servo Factor" << endl;

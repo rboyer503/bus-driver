@@ -24,13 +24,12 @@ const std::string LaneTransform::c_laneFileName("lane_file.txt");
 
 LaneTransform::LaneTransform()
 {
-	// TODO: Remove weight array?
 	const int divisionSize = c_voteArrayHeight / 3;
 	for (int y = 0; y < divisionSize; ++y)
 	{
 		m_weightArray[y] = 1;
 		m_weightArray[y + divisionSize] = 2;
-		m_weightArray[y + (divisionSize * 2)] = 3;
+		m_weightArray[y + (divisionSize * 2)] = 4;
 	}
 
 	for (int laneId = 0; laneId < c_laneVariants; ++laneId)
